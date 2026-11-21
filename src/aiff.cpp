@@ -50,8 +50,8 @@ struct AiffChunks {
     if (exp == 0x7FFFu) {
         return 0.0;
     }
-    const int unbiased_exp = static_cast<int>(exp) - 16383;
-    return static_cast<f64>(sign) * std::ldexp(static_cast<f64>(mant), unbiased_exp - 63);
+    const int unbiased_exp = as<int>(exp) - 16383;
+    return as<f64>(sign) * std::ldexp(as<f64>(mant), unbiased_exp - 63);
 }
 
 template <typename ByteBuf> void write_extended80_be(ByteBuf& buf, f64 val) {
@@ -63,8 +63,8 @@ template <typename ByteBuf> void write_extended80_be(ByteBuf& buf, f64 val) {
     }
     int exp = 0;
     const f64 mant = std::frexp(val, &exp);
-    const u16 biased_exp = static_cast<u16>(exp + 16382);
-    const u64 mant_int = static_cast<u64>(std::ldexp(mant, 64));
+    const u16 biased_exp = as<u16>(exp + 16382);
+    const u64 mant_int = as<u64>(std::ldexp(mant, 64));
     audio_detail::write_u16_be(buf, biased_exp);
     audio_detail::write_u64_be(buf, mant_int);
 }
@@ -94,7 +94,7 @@ template <typename ByteBuf> void write_extended80_be(ByteBuf& buf, f64 val) {
             out.anno = {payload, csize, true};
         }
 
-        usize advance = static_cast<usize>(csize);
+        usize advance = as<usize>(csize);
         if ((advance & 1u) != 0u) {
             if (advance == ~usize{0}) break;
             ++advance;
@@ -154,7 +154,7 @@ struct ParsedComm {
 
     if (!is_aifc) {
         out.encoding = AiffEncoding::PcmBe;
-        out.bytes_per_sample = static_cast<usize>((out.bits_per_sample + 7u) / 8u);
+        out.bytes_per_sample = as<usize>((out.bits_per_sample + 7u) / 8u);
         out.compression_method = String("Uncompressed", alloc);
         return out;
     }
@@ -162,11 +162,11 @@ struct ParsedComm {
     const u8* fcc = c + 18;
     if (mem_eq(fcc, "NONE", 4) || mem_eq(fcc, "twos", 4)) {
         out.encoding = AiffEncoding::PcmBe;
-        out.bytes_per_sample = static_cast<usize>((out.bits_per_sample + 7u) / 8u);
+        out.bytes_per_sample = as<usize>((out.bits_per_sample + 7u) / 8u);
         out.compression_method = String("Uncompressed", alloc);
     } else if (mem_eq(fcc, "sowt", 4)) {
         out.encoding = AiffEncoding::PcmLe;
-        out.bytes_per_sample = static_cast<usize>((out.bits_per_sample + 7u) / 8u);
+        out.bytes_per_sample = as<usize>((out.bits_per_sample + 7u) / 8u);
         out.compression_method = String("Little-Endian PCM", alloc);
     } else if (mem_eq(fcc, "raw ", 4)) {
         out.encoding = AiffEncoding::PcmU8;
@@ -195,7 +195,7 @@ struct ParsedComm {
         out.compression_method = String("A-law", alloc);
     } else {
         out.encoding = AiffEncoding::Unsupported;
-        out.bytes_per_sample = static_cast<usize>((out.bits_per_sample + 7u) / 8u);
+        out.bytes_per_sample = as<usize>((out.bits_per_sample + 7u) / 8u);
         String label = String::with_capacity(9, alloc);
         label.append("AIFC ");
         label.append(StringRef(reinterpret_cast<const char*>(fcc), 4));
@@ -272,9 +272,9 @@ Result<AudioInfo> peek_aiff(ArrayRef<u8> bytes, Allocator* alloc) {
     info.sample_rate = comm.sample_rate;
     info.bits_per_sample = comm.bits_per_sample;
     info.total_frames = comm.num_frames;
-    info.duration_sec = static_cast<f64>(comm.num_frames) / comm.sample_rate;
+    info.duration_sec = as<f64>(comm.num_frames) / comm.sample_rate;
     if (info.duration_sec > 0.0 && len > 0) {
-        info.bit_rate_kbps = static_cast<u32>((static_cast<f64>(len) * 8.0) / (info.duration_sec * 1000.0));
+        info.bit_rate_kbps = as<u32>((as<f64>(len) * 8.0) / (info.duration_sec * 1000.0));
     }
 
     aiff_detail::parse_aiff_metadata(d, len, chunks, info.metadata, dst_alloc);
@@ -333,24 +333,24 @@ Result<AudioBuffer> decode_aiff(ArrayRef<u8> bytes, const AudioDecodeOptions& op
         return ErrorCode::EndOfFile;
     }
     const u32 ssnd_offset = audio_detail::read_u32_be(d + chunks.ssnd.offset);
-    if (static_cast<usize>(ssnd_offset) > len - (chunks.ssnd.offset + 8u) ||
-        static_cast<u64>(ssnd_offset) + 8ULL > static_cast<u64>(chunks.ssnd.size)) [[unlikely]] {
+    if (as<usize>(ssnd_offset) > len - (chunks.ssnd.offset + 8u) ||
+        as<u64>(ssnd_offset) + 8ULL > as<u64>(chunks.ssnd.size)) [[unlikely]] {
         return ErrorCode::EndOfFile;
     }
 
-    const usize data_start = chunks.ssnd.offset + 8u + static_cast<usize>(ssnd_offset);
-    const usize ssnd_avail_in_chunk = static_cast<usize>(chunks.ssnd.size) - (8u + static_cast<usize>(ssnd_offset));
+    const usize data_start = chunks.ssnd.offset + 8u + as<usize>(ssnd_offset);
+    const usize ssnd_avail_in_chunk = as<usize>(chunks.ssnd.size) - (8u + as<usize>(ssnd_offset));
     const usize max_data_bytes = keel::min(len - data_start, ssnd_avail_in_chunk);
 
-    const usize block_align = static_cast<usize>(comm.channels) * comm.bytes_per_sample;
+    const usize block_align = as<usize>(comm.channels) * comm.bytes_per_sample;
     const u64 end_frame = win.start + win.count;
-    if (end_frame > static_cast<u64>(max_data_bytes) / static_cast<u64>(block_align)) [[unlikely]] {
+    if (end_frame > as<u64>(max_data_bytes) / as<u64>(block_align)) [[unlikely]] {
         return ErrorCode::EndOfFile;
     }
 
     KEEL_TRY_ASSIGN(res.data, audio_detail::alloc_sample_buffer(win.count, comm.channels, out_type, dst_alloc));
 
-    const u8* raw_samples = d + data_start + static_cast<usize>(win.start) * block_align;
+    const u8* raw_samples = d + data_start + as<usize>(win.start) * block_align;
     const u64 nframes = win.count;
     const u16 nch = comm.channels;
     const usize bps_bytes = comm.bytes_per_sample;
@@ -359,47 +359,47 @@ Result<AudioBuffer> decode_aiff(ArrayRef<u8> bytes, const AudioDecodeOptions& op
     if (!opts.native_sample_type) {
         f64* dst = res.samples_f64().data();
         for (u64 t = 0; t < nframes; ++t) {
-            const u8* frame = raw_samples + static_cast<usize>(t) * block_align;
+            const u8* frame = raw_samples + as<usize>(t) * block_align;
             for (u16 ch = 0; ch < nch; ++ch) {
-                const u8* s = frame + static_cast<usize>(ch) * bps_bytes;
+                const u8* s = frame + as<usize>(ch) * bps_bytes;
                 f64 val = 0.0;
                 switch (enc) {
                     case aiff_detail::AiffEncoding::PcmBe:
                         if (comm.bits_per_sample == 8) {
-                            val = static_cast<f64>(static_cast<i8>(*s)) / 128.0;
+                            val = as<f64>(as<i8>(*s)) / 128.0;
                         } else if (comm.bits_per_sample == 16) {
-                            val = static_cast<f64>(audio_detail::read_i16_be(s)) / 32768.0;
+                            val = as<f64>(audio_detail::read_i16_be(s)) / 32768.0;
                         } else if (comm.bits_per_sample == 24) {
-                            val = static_cast<f64>(audio_detail::read_i24_be(s)) / 8388608.0;
+                            val = as<f64>(audio_detail::read_i24_be(s)) / 8388608.0;
                         } else {
-                            val = static_cast<f64>(audio_detail::read_i32_be(s)) / 2147483648.0;
+                            val = as<f64>(audio_detail::read_i32_be(s)) / 2147483648.0;
                         }
                         break;
                     case aiff_detail::AiffEncoding::PcmLe:
                         if (comm.bits_per_sample == 8) {
-                            val = static_cast<f64>(static_cast<i8>(*s)) / 128.0;
+                            val = as<f64>(as<i8>(*s)) / 128.0;
                         } else if (comm.bits_per_sample == 16) {
-                            val = static_cast<f64>(audio_detail::read_i16_le(s)) / 32768.0;
+                            val = as<f64>(audio_detail::read_i16_le(s)) / 32768.0;
                         } else if (comm.bits_per_sample == 24) {
-                            val = static_cast<f64>(audio_detail::read_i24_le(s)) / 8388608.0;
+                            val = as<f64>(audio_detail::read_i24_le(s)) / 8388608.0;
                         } else {
-                            val = static_cast<f64>(audio_detail::read_i32_le(s)) / 2147483648.0;
+                            val = as<f64>(audio_detail::read_i32_le(s)) / 2147483648.0;
                         }
                         break;
                     case aiff_detail::AiffEncoding::PcmU8:
-                        val = (static_cast<f64>(*s) - 128.0) / 128.0;
+                        val = (as<f64>(*s) - 128.0) / 128.0;
                         break;
                     case aiff_detail::AiffEncoding::Float32Be:
-                        val = static_cast<f64>(audio_detail::read_f32_be(s));
+                        val = as<f64>(audio_detail::read_f32_be(s));
                         break;
                     case aiff_detail::AiffEncoding::Float64Be:
                         val = audio_detail::read_f64_be(s);
                         break;
                     case aiff_detail::AiffEncoding::MuLaw:
-                        val = static_cast<f64>(audio_detail::decode_mu_law(*s)) / 32768.0;
+                        val = as<f64>(audio_detail::decode_mu_law(*s)) / 32768.0;
                         break;
                     case aiff_detail::AiffEncoding::ALaw:
-                        val = static_cast<f64>(audio_detail::decode_a_law(*s)) / 32768.0;
+                        val = as<f64>(audio_detail::decode_a_law(*s)) / 32768.0;
                         break;
                     case aiff_detail::AiffEncoding::Unsupported:
                         break;
@@ -410,7 +410,7 @@ Result<AudioBuffer> decode_aiff(ArrayRef<u8> bytes, const AudioDecodeOptions& op
     } else if (out_type == AudioSampleType::U8) {
         u8* dst = res.samples_u8().data();
         for (u64 t = 0; t < nframes; ++t) {
-            const u8* frame = raw_samples + static_cast<usize>(t) * block_align;
+            const u8* frame = raw_samples + as<usize>(t) * block_align;
             for (u16 ch = 0; ch < nch; ++ch) {
                 dst[audio_detail::sample_index(t, ch, nframes, nch, opts.layout)] = frame[ch];
             }
@@ -418,15 +418,15 @@ Result<AudioBuffer> decode_aiff(ArrayRef<u8> bytes, const AudioDecodeOptions& op
     } else if (out_type == AudioSampleType::I8) {
         i8* dst = res.samples_i8().data();
         for (u64 t = 0; t < nframes; ++t) {
-            const u8* frame = raw_samples + static_cast<usize>(t) * block_align;
+            const u8* frame = raw_samples + as<usize>(t) * block_align;
             for (u16 ch = 0; ch < nch; ++ch) {
-                dst[audio_detail::sample_index(t, ch, nframes, nch, opts.layout)] = static_cast<i8>(frame[ch]);
+                dst[audio_detail::sample_index(t, ch, nframes, nch, opts.layout)] = as<i8>(frame[ch]);
             }
         }
     } else if (out_type == AudioSampleType::I16) {
         i16* dst = res.samples_i16().data();
         for (u64 t = 0; t < nframes; ++t) {
-            const u8* frame = raw_samples + static_cast<usize>(t) * block_align;
+            const u8* frame = raw_samples + as<usize>(t) * block_align;
             for (u16 ch = 0; ch < nch; ++ch) {
                 i16 val = 0;
                 if (enc == aiff_detail::AiffEncoding::MuLaw) {
@@ -434,9 +434,9 @@ Result<AudioBuffer> decode_aiff(ArrayRef<u8> bytes, const AudioDecodeOptions& op
                 } else if (enc == aiff_detail::AiffEncoding::ALaw) {
                     val = audio_detail::decode_a_law(frame[ch]);
                 } else if (enc == aiff_detail::AiffEncoding::PcmLe) {
-                    val = audio_detail::read_i16_le(frame + static_cast<usize>(ch) * 2);
+                    val = audio_detail::read_i16_le(frame + as<usize>(ch) * 2);
                 } else {
-                    val = audio_detail::read_i16_be(frame + static_cast<usize>(ch) * 2);
+                    val = audio_detail::read_i16_be(frame + as<usize>(ch) * 2);
                 }
                 dst[audio_detail::sample_index(t, ch, nframes, nch, opts.layout)] = val;
             }
@@ -444,9 +444,9 @@ Result<AudioBuffer> decode_aiff(ArrayRef<u8> bytes, const AudioDecodeOptions& op
     } else if (out_type == AudioSampleType::I32) {
         i32* dst = res.samples_i32().data();
         for (u64 t = 0; t < nframes; ++t) {
-            const u8* frame = raw_samples + static_cast<usize>(t) * block_align;
+            const u8* frame = raw_samples + as<usize>(t) * block_align;
             for (u16 ch = 0; ch < nch; ++ch) {
-                const u8* s = frame + static_cast<usize>(ch) * bps_bytes;
+                const u8* s = frame + as<usize>(ch) * bps_bytes;
                 i32 val = 0;
                 if (enc == aiff_detail::AiffEncoding::PcmLe) {
                     val = (comm.bits_per_sample == 24) ? audio_detail::read_i24_le(s) : audio_detail::read_i32_le(s);
@@ -459,19 +459,19 @@ Result<AudioBuffer> decode_aiff(ArrayRef<u8> bytes, const AudioDecodeOptions& op
     } else if (out_type == AudioSampleType::F32) {
         f32* dst = res.samples_f32().data();
         for (u64 t = 0; t < nframes; ++t) {
-            const u8* frame = raw_samples + static_cast<usize>(t) * block_align;
+            const u8* frame = raw_samples + as<usize>(t) * block_align;
             for (u16 ch = 0; ch < nch; ++ch) {
                 dst[audio_detail::sample_index(t, ch, nframes, nch, opts.layout)] =
-                    audio_detail::read_f32_be(frame + static_cast<usize>(ch) * 4);
+                    audio_detail::read_f32_be(frame + as<usize>(ch) * 4);
             }
         }
     } else {
         f64* dst = res.samples_f64().data();
         for (u64 t = 0; t < nframes; ++t) {
-            const u8* frame = raw_samples + static_cast<usize>(t) * block_align;
+            const u8* frame = raw_samples + as<usize>(t) * block_align;
             for (u16 ch = 0; ch < nch; ++ch) {
                 dst[audio_detail::sample_index(t, ch, nframes, nch, opts.layout)] =
-                    audio_detail::read_f64_be(frame + static_cast<usize>(ch) * 8);
+                    audio_detail::read_f64_be(frame + as<usize>(ch) * 8);
             }
         }
     }
@@ -495,15 +495,15 @@ Result<Array<u8>> encode_aiff(const AudioView& view, const AudioEncodeOptions& o
         return ErrorCode::OutOfRange;
     }
 
-    const usize bytes_per_sample = static_cast<usize>(bps / 8u);
-    const u64 block_align = static_cast<u64>(view.channels) * static_cast<u64>(bytes_per_sample);
+    const usize bytes_per_sample = as<usize>(bps / 8u);
+    const u64 block_align = as<u64>(view.channels) * as<u64>(bytes_per_sample);
     if (view.frames > (0xFFFFFFFFULL - 8ULL) / block_align) [[unlikely]] {
         return ErrorCode::OutOfRange;
     }
 
     const u64 data_size_u64 = view.frames * block_align;
-    const u32 ssnd_size = static_cast<u32>(8ULL + data_size_u64);
-    const u64 ssnd_padded = static_cast<u64>(ssnd_size) + (static_cast<u64>(ssnd_size) & 1ULL);
+    const u32 ssnd_size = as<u32>(8ULL + data_size_u64);
+    const u64 ssnd_padded = as<u64>(ssnd_size) + (as<u64>(ssnd_size) & 1ULL);
 
     Allocator* dst_alloc = opts.allocator ? opts.allocator : default_allocator();
     ArenaTemp scratch = get_scratch(dst_alloc);
@@ -515,7 +515,7 @@ Result<Array<u8>> encode_aiff(const AudioView& view, const AudioEncodeOptions& o
             return ErrorCode::OutOfRange;
         }
         audio_detail::write_fourcc(meta, id);
-        audio_detail::write_u32_be(meta, static_cast<u32>(text.size()));
+        audio_detail::write_u32_be(meta, as<u32>(text.size()));
         meta.append(ArrayRef<u8>(reinterpret_cast<const u8*>(text.data()), text.size()));
         if ((text.size() & 1u) != 0u) {
             meta.push_back(0u);
@@ -531,16 +531,16 @@ Result<Array<u8>> encode_aiff(const AudioView& view, const AudioEncodeOptions& o
 
     const u32 comm_size = use_float ? 24u : 18u;
     const u64 fver_total = use_float ? 12ULL : 0ULL;
-    const u64 form_size_u64 = 4ULL + fver_total + (8ULL + static_cast<u64>(comm_size)) + (8ULL + ssnd_padded) +
-                              static_cast<u64>(meta.size());
+    const u64 form_size_u64 = 4ULL + fver_total + (8ULL + as<u64>(comm_size)) + (8ULL + ssnd_padded) +
+                              as<u64>(meta.size());
     if (form_size_u64 > 0xFFFFFFFFULL) [[unlikely]] {
         return ErrorCode::OutOfRange;
     }
 
-    Array<u8> out = Array<u8>::with_capacity(static_cast<usize>(form_size_u64 + 8ULL), dst_alloc);
+    Array<u8> out = Array<u8>::with_capacity(as<usize>(form_size_u64 + 8ULL), dst_alloc);
 
     audio_detail::write_fourcc(out, "FORM");
-    audio_detail::write_u32_be(out, static_cast<u32>(form_size_u64));
+    audio_detail::write_u32_be(out, as<u32>(form_size_u64));
     if (use_float) {
         audio_detail::write_fourcc(out, "AIFC");
         audio_detail::write_fourcc(out, "FVER");
@@ -553,7 +553,7 @@ Result<Array<u8>> encode_aiff(const AudioView& view, const AudioEncodeOptions& o
     audio_detail::write_fourcc(out, "COMM");
     audio_detail::write_u32_be(out, comm_size);
     audio_detail::write_u16_be(out, view.channels);
-    audio_detail::write_u32_be(out, static_cast<u32>(view.frames));
+    audio_detail::write_u32_be(out, as<u32>(view.frames));
     audio_detail::write_u16_be(out, bps);
     aiff_detail::write_extended80_be(out, view.sample_rate);
     if (use_float) {
@@ -581,13 +581,13 @@ Result<Array<u8>> encode_aiff(const AudioView& view, const AudioEncodeOptions& o
                     audio_detail::write_f64_be(out, audio_detail::view_sample_f64(view, idx));
                 }
             } else if (bps == 8) {
-                out.push_back(static_cast<u8>(audio_detail::view_sample_i8_pcm(view, idx)));
+                out.push_back(as<u8>(audio_detail::view_sample_i8_pcm(view, idx)));
             } else if (bps == 16) {
-                audio_detail::write_u16_be(out, static_cast<u16>(audio_detail::view_sample_i16_pcm(view, idx)));
+                audio_detail::write_u16_be(out, as<u16>(audio_detail::view_sample_i16_pcm(view, idx)));
             } else if (bps == 24) {
                 audio_detail::write_i24_be(out, audio_detail::view_sample_i24_pcm(view, idx));
             } else {
-                audio_detail::write_u32_be(out, static_cast<u32>(audio_detail::view_sample_i32_pcm(view, idx)));
+                audio_detail::write_u32_be(out, as<u32>(audio_detail::view_sample_i32_pcm(view, idx)));
             }
         }
     }

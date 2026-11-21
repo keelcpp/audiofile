@@ -47,7 +47,7 @@ struct AuEncodingSpec {
         return String(alloc);
     }
     const u8* ptr = data + 24;
-    usize annot_len = static_cast<usize>(data_offset - 24u);
+    usize annot_len = as<usize>(data_offset - 24u);
     for (usize i = 0; i < annot_len; ++i) {
         if (ptr[i] == 0u) {
             annot_len = i;
@@ -93,7 +93,7 @@ Result<AudioInfo> peek_au(ArrayRef<u8> bytes, Allocator* alloc) {
     AudioInfo info;
     info.format = AudioFormat::Au;
     info.channels = num_channels;
-    info.sample_rate = static_cast<f64>(sample_rate);
+    info.sample_rate = as<f64>(sample_rate);
     info.bits_per_sample = spec.bits_per_sample;
     if (spec.supported) {
         info.compression_method = String(spec.label, dst_alloc);
@@ -103,14 +103,14 @@ Result<AudioInfo> peek_au(ArrayRef<u8> bytes, Allocator* alloc) {
     info.metadata.comment = au_detail::parse_au_annotation(d, data_offset, dst_alloc);
 
     const u64 actual_data_bytes = (data_size != 0xFFFFFFFFu && data_size > 0u)
-                                      ? static_cast<u64>(data_size)
-                                      : static_cast<u64>(len - static_cast<usize>(data_offset));
-    const u64 block_align = static_cast<u64>(num_channels) * static_cast<u64>(spec.bytes_per_sample);
+                                      ? as<u64>(data_size)
+                                      : as<u64>(len - as<usize>(data_offset));
+    const u64 block_align = as<u64>(num_channels) * as<u64>(spec.bytes_per_sample);
     if (block_align > 0ULL) {
         info.total_frames = actual_data_bytes / block_align;
-        info.duration_sec = static_cast<f64>(info.total_frames) / info.sample_rate;
+        info.duration_sec = as<f64>(info.total_frames) / info.sample_rate;
         if (info.duration_sec > 0.0 && len > 0) {
-            info.bit_rate_kbps = static_cast<u32>((static_cast<f64>(len) * 8.0) / (info.duration_sec * 1000.0));
+            info.bit_rate_kbps = as<u32>((as<f64>(len) * 8.0) / (info.duration_sec * 1000.0));
         }
     }
 
@@ -150,20 +150,20 @@ Result<AudioBuffer> decode_au(ArrayRef<u8> bytes, const AudioDecodeOptions& opts
         return ErrorCode::NotSupported;
     }
 
-    const u16 num_channels = static_cast<u16>(num_channels_u32);
-    const usize block_align = static_cast<usize>(num_channels) * spec.bytes_per_sample;
-    const usize remaining = len - static_cast<usize>(data_offset);
+    const u16 num_channels = as<u16>(num_channels_u32);
+    const usize block_align = as<usize>(num_channels) * spec.bytes_per_sample;
+    const usize remaining = len - as<usize>(data_offset);
 
     const u64 declared_bytes =
-        (data_size != 0xFFFFFFFFu) ? static_cast<u64>(data_size) : static_cast<u64>(remaining);
-    const u64 available_frames = declared_bytes / static_cast<u64>(block_align);
+        (data_size != 0xFFFFFFFFu) ? as<u64>(data_size) : as<u64>(remaining);
+    const u64 available_frames = declared_bytes / as<u64>(block_align);
 
     KEEL_TRY_ASSIGN(const audio_detail::FrameWindow win, audio_detail::compute_frame_window(available_frames, opts));
 
     const AudioSampleType out_type = opts.native_sample_type ? spec.native_type : AudioSampleType::F64;
 
     AudioBuffer res;
-    res.sample_rate = static_cast<f64>(sample_rate);
+    res.sample_rate = as<f64>(sample_rate);
     res.bits_per_sample = spec.bits_per_sample;
     res.channels = num_channels;
     res.frames = win.count;
@@ -178,47 +178,47 @@ Result<AudioBuffer> decode_au(ArrayRef<u8> bytes, const AudioDecodeOptions& opts
     }
 
     const u64 end_frame = win.start + win.count;
-    if (end_frame > static_cast<u64>(remaining) / static_cast<u64>(block_align)) [[unlikely]] {
+    if (end_frame > as<u64>(remaining) / as<u64>(block_align)) [[unlikely]] {
         return ErrorCode::EndOfFile;
     }
 
     KEEL_TRY_ASSIGN(res.data, audio_detail::alloc_sample_buffer(win.count, num_channels, out_type, dst_alloc));
 
-    const u8* raw_samples = d + static_cast<usize>(data_offset) + static_cast<usize>(win.start) * block_align;
+    const u8* raw_samples = d + as<usize>(data_offset) + as<usize>(win.start) * block_align;
     const u64 nframes = win.count;
     const usize bps_bytes = spec.bytes_per_sample;
 
     if (!opts.native_sample_type) {
         f64* dst = res.samples_f64().data();
         for (u64 t = 0; t < nframes; ++t) {
-            const u8* frame = raw_samples + static_cast<usize>(t) * block_align;
+            const u8* frame = raw_samples + as<usize>(t) * block_align;
             for (u16 ch = 0; ch < num_channels; ++ch) {
-                const u8* s = frame + static_cast<usize>(ch) * bps_bytes;
+                const u8* s = frame + as<usize>(ch) * bps_bytes;
                 f64 val = 0.0;
                 switch (encoding) {
                     case 1:
-                        val = static_cast<f64>(audio_detail::decode_mu_law(*s)) / 32768.0;
+                        val = as<f64>(audio_detail::decode_mu_law(*s)) / 32768.0;
                         break;
                     case 2:
-                        val = static_cast<f64>(static_cast<i8>(*s)) / 128.0;
+                        val = as<f64>(as<i8>(*s)) / 128.0;
                         break;
                     case 3:
-                        val = static_cast<f64>(audio_detail::read_i16_be(s)) / 32768.0;
+                        val = as<f64>(audio_detail::read_i16_be(s)) / 32768.0;
                         break;
                     case 4:
-                        val = static_cast<f64>(audio_detail::read_i24_be(s)) / 8388608.0;
+                        val = as<f64>(audio_detail::read_i24_be(s)) / 8388608.0;
                         break;
                     case 5:
-                        val = static_cast<f64>(audio_detail::read_i32_be(s)) / 2147483648.0;
+                        val = as<f64>(audio_detail::read_i32_be(s)) / 2147483648.0;
                         break;
                     case 6:
-                        val = static_cast<f64>(audio_detail::read_f32_be(s));
+                        val = as<f64>(audio_detail::read_f32_be(s));
                         break;
                     case 7:
                         val = audio_detail::read_f64_be(s);
                         break;
                     case 27:
-                        val = static_cast<f64>(audio_detail::decode_a_law(*s)) / 32768.0;
+                        val = as<f64>(audio_detail::decode_a_law(*s)) / 32768.0;
                         break;
                     default:
                         break;
@@ -229,15 +229,15 @@ Result<AudioBuffer> decode_au(ArrayRef<u8> bytes, const AudioDecodeOptions& opts
     } else if (out_type == AudioSampleType::I8) {
         i8* dst = res.samples_i8().data();
         for (u64 t = 0; t < nframes; ++t) {
-            const u8* frame = raw_samples + static_cast<usize>(t) * block_align;
+            const u8* frame = raw_samples + as<usize>(t) * block_align;
             for (u16 ch = 0; ch < num_channels; ++ch) {
-                dst[audio_detail::sample_index(t, ch, nframes, num_channels, opts.layout)] = static_cast<i8>(frame[ch]);
+                dst[audio_detail::sample_index(t, ch, nframes, num_channels, opts.layout)] = as<i8>(frame[ch]);
             }
         }
     } else if (out_type == AudioSampleType::I16) {
         i16* dst = res.samples_i16().data();
         for (u64 t = 0; t < nframes; ++t) {
-            const u8* frame = raw_samples + static_cast<usize>(t) * block_align;
+            const u8* frame = raw_samples + as<usize>(t) * block_align;
             for (u16 ch = 0; ch < num_channels; ++ch) {
                 i16 val = 0;
                 if (encoding == 1u) {
@@ -245,7 +245,7 @@ Result<AudioBuffer> decode_au(ArrayRef<u8> bytes, const AudioDecodeOptions& opts
                 } else if (encoding == 27u) {
                     val = audio_detail::decode_a_law(frame[ch]);
                 } else {
-                    val = audio_detail::read_i16_be(frame + static_cast<usize>(ch) * 2);
+                    val = audio_detail::read_i16_be(frame + as<usize>(ch) * 2);
                 }
                 dst[audio_detail::sample_index(t, ch, nframes, num_channels, opts.layout)] = val;
             }
@@ -253,30 +253,30 @@ Result<AudioBuffer> decode_au(ArrayRef<u8> bytes, const AudioDecodeOptions& opts
     } else if (out_type == AudioSampleType::I32) {
         i32* dst = res.samples_i32().data();
         for (u64 t = 0; t < nframes; ++t) {
-            const u8* frame = raw_samples + static_cast<usize>(t) * block_align;
+            const u8* frame = raw_samples + as<usize>(t) * block_align;
             for (u16 ch = 0; ch < num_channels; ++ch) {
                 const i32 val = (encoding == 4u)
-                                    ? audio_detail::read_i24_be(frame + static_cast<usize>(ch) * 3)
-                                    : audio_detail::read_i32_be(frame + static_cast<usize>(ch) * 4);
+                                    ? audio_detail::read_i24_be(frame + as<usize>(ch) * 3)
+                                    : audio_detail::read_i32_be(frame + as<usize>(ch) * 4);
                 dst[audio_detail::sample_index(t, ch, nframes, num_channels, opts.layout)] = val;
             }
         }
     } else if (out_type == AudioSampleType::F32) {
         f32* dst = res.samples_f32().data();
         for (u64 t = 0; t < nframes; ++t) {
-            const u8* frame = raw_samples + static_cast<usize>(t) * block_align;
+            const u8* frame = raw_samples + as<usize>(t) * block_align;
             for (u16 ch = 0; ch < num_channels; ++ch) {
                 dst[audio_detail::sample_index(t, ch, nframes, num_channels, opts.layout)] =
-                    audio_detail::read_f32_be(frame + static_cast<usize>(ch) * 4);
+                    audio_detail::read_f32_be(frame + as<usize>(ch) * 4);
             }
         }
     } else {
         f64* dst = res.samples_f64().data();
         for (u64 t = 0; t < nframes; ++t) {
-            const u8* frame = raw_samples + static_cast<usize>(t) * block_align;
+            const u8* frame = raw_samples + as<usize>(t) * block_align;
             for (u16 ch = 0; ch < num_channels; ++ch) {
                 dst[audio_detail::sample_index(t, ch, nframes, num_channels, opts.layout)] =
-                    audio_detail::read_f64_be(frame + static_cast<usize>(ch) * 8);
+                    audio_detail::read_f64_be(frame + as<usize>(ch) * 8);
             }
         }
     }
@@ -298,10 +298,10 @@ Result<Array<u8>> encode_au(const AudioView& view, const AudioEncodeOptions& opt
     }
 
     const f64 sr_rounded = std::round(view.sample_rate);
-    if (!(sr_rounded >= 1.0 && sr_rounded <= static_cast<f64>(0xFFFFFFFFu))) [[unlikely]] {
+    if (!(sr_rounded >= 1.0 && sr_rounded <= as<f64>(0xFFFFFFFFu))) [[unlikely]] {
         return ErrorCode::InvalidArgument;
     }
-    const u32 sample_rate_u32 = static_cast<u32>(sr_rounded);
+    const u32 sample_rate_u32 = as<u32>(sr_rounded);
 
     u32 encoding = 3;
     usize bytes_per_sample = 2;
@@ -335,24 +335,24 @@ Result<Array<u8>> encode_au(const AudioView& view, const AudioEncodeOptions& opt
         header_size += 8u - (header_size & 7u);
     }
 
-    const u64 block_align = static_cast<u64>(view.channels) * static_cast<u64>(bytes_per_sample);
+    const u64 block_align = as<u64>(view.channels) * as<u64>(bytes_per_sample);
     if (view.frames > 0xFFFFFFFFULL / block_align) [[unlikely]] {
         return ErrorCode::OutOfRange;
     }
     const u64 data_size_u64 = view.frames * block_align;
-    if (data_size_u64 > static_cast<u64>(~usize{0}) - static_cast<u64>(header_size)) [[unlikely]] {
+    if (data_size_u64 > as<u64>(~usize{0}) - as<u64>(header_size)) [[unlikely]] {
         return ErrorCode::OutOfRange;
     }
 
     Allocator* dst_alloc = opts.allocator ? opts.allocator : default_allocator();
-    Array<u8> out = Array<u8>::with_capacity(header_size + static_cast<usize>(data_size_u64), dst_alloc);
+    Array<u8> out = Array<u8>::with_capacity(header_size + as<usize>(data_size_u64), dst_alloc);
 
     audio_detail::write_fourcc(out, ".snd");
-    audio_detail::write_u32_be(out, static_cast<u32>(header_size));
-    audio_detail::write_u32_be(out, static_cast<u32>(data_size_u64));
+    audio_detail::write_u32_be(out, as<u32>(header_size));
+    audio_detail::write_u32_be(out, as<u32>(data_size_u64));
     audio_detail::write_u32_be(out, encoding);
     audio_detail::write_u32_be(out, sample_rate_u32);
-    audio_detail::write_u32_be(out, static_cast<u32>(view.channels));
+    audio_detail::write_u32_be(out, as<u32>(view.channels));
 
     if (!opts.comment.empty()) {
         out.append(ArrayRef<u8>(reinterpret_cast<const u8*>(opts.comment.data()), opts.comment.size()));
@@ -371,13 +371,13 @@ Result<Array<u8>> encode_au(const AudioView& view, const AudioEncodeOptions& opt
                     audio_detail::write_f64_be(out, audio_detail::view_sample_f64(view, idx));
                 }
             } else if (bps == 8) {
-                out.push_back(static_cast<u8>(audio_detail::view_sample_i8_pcm(view, idx)));
+                out.push_back(as<u8>(audio_detail::view_sample_i8_pcm(view, idx)));
             } else if (bps == 16) {
-                audio_detail::write_u16_be(out, static_cast<u16>(audio_detail::view_sample_i16_pcm(view, idx)));
+                audio_detail::write_u16_be(out, as<u16>(audio_detail::view_sample_i16_pcm(view, idx)));
             } else if (bps == 24) {
                 audio_detail::write_i24_be(out, audio_detail::view_sample_i24_pcm(view, idx));
             } else {
-                audio_detail::write_u32_be(out, static_cast<u32>(audio_detail::view_sample_i32_pcm(view, idx)));
+                audio_detail::write_u32_be(out, as<u32>(audio_detail::view_sample_i32_pcm(view, idx)));
             }
         }
     }

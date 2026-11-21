@@ -33,7 +33,7 @@ namespace midi_detail {
             return ErrorCode::EndOfFile;
         }
         const u8 b = data[pos++];
-        val = (val << 7) | static_cast<u32>(b & 0x7Fu);
+        val = (val << 7) | as<u32>(b & 0x7Fu);
         if ((b & 0x80u) == 0u) {
             out_val = val;
             return ErrorCode::Ok;
@@ -45,9 +45,9 @@ namespace midi_detail {
 template <typename ByteBuf> void write_vlq(ByteBuf& buf, u32 val) {
     u8 tmp[5];
     int count = 0;
-    tmp[count++] = static_cast<u8>(val & 0x7Fu);
+    tmp[count++] = as<u8>(val & 0x7Fu);
     while ((val >>= 7) > 0u) {
-        tmp[count++] = static_cast<u8>((val & 0x7Fu) | 0x80u);
+        tmp[count++] = as<u8>((val & 0x7Fu) | 0x80u);
     }
     for (int i = count - 1; i >= 0; --i) {
         buf.push_back(tmp[i]);
@@ -92,8 +92,8 @@ struct PendingNote {
     const usize idx = (upper > 0u) ? (upper - 1u) : 0u;
     const TempoSegment& seg = segments[idx];
     const u64 delta_ticks = tick - seg.tick;
-    const f64 sec_per_tick = (static_cast<f64>(seg.us_per_quarter) / 1000000.0) / static_cast<f64>(tpqn);
-    return seg.time_sec + static_cast<f64>(delta_ticks) * sec_per_tick;
+    const f64 sec_per_tick = (as<f64>(seg.us_per_quarter) / 1000000.0) / as<f64>(tpqn);
+    return seg.time_sec + as<f64>(delta_ticks) * sec_per_tick;
 }
 
 struct ParsedSmf {
@@ -154,7 +154,7 @@ struct ParsedSmf {
     ActiveNoteQueue* active_slots = build_notes ? arena.alloc_array<ActiveNoteQueue>(16u * 128u) : nullptr;
     ActiveNoteNode* free_list = nullptr;
 
-    usize pos = 8u + static_cast<usize>(header_len);
+    usize pos = 8u + as<usize>(header_len);
     u64 max_tick = 0;
     u64 note_on_count = 0;
     String first_track_name(dst_alloc);
@@ -171,7 +171,7 @@ struct ParsedSmf {
         if (trk_len > len - pos) [[unlikely]] {
             return ErrorCode::EndOfFile;
         }
-        const usize trk_end = pos + static_cast<usize>(trk_len);
+        const usize trk_end = pos + as<usize>(trk_len);
 
         if (build_notes) {
             mem_zero(active_slots, sizeof(ActiveNoteQueue) * 16u * 128u);
@@ -220,8 +220,8 @@ struct ParsedSmf {
                     return ErrorCode::EndOfFile;
                 }
                 if (meta_type == 0x51u && meta_len == 3u) {
-                    const u32 us = (static_cast<u32>(d[pos]) << 16) | (static_cast<u32>(d[pos + 1]) << 8) |
-                                   static_cast<u32>(d[pos + 2]);
+                    const u32 us = (as<u32>(d[pos]) << 16) | (as<u32>(d[pos + 1]) << 8) |
+                                   as<u32>(d[pos + 2]);
                     if (us > 0u) {
                         raw_tempos.push_back(RawTempoEvent{current_tick, tempo_order++, us});
                     }
@@ -252,18 +252,18 @@ struct ParsedSmf {
                     pos += 1u;
                 }
             } else {
-                const u8 msg_type = static_cast<u8>(status & 0xF0u);
-                const u8 ch = static_cast<u8>(status & 0x0Fu);
+                const u8 msg_type = as<u8>(status & 0xF0u);
+                const u8 ch = as<u8>(status & 0x0Fu);
                 if (pos >= trk_end) [[unlikely]] {
                     return ErrorCode::EndOfFile;
                 }
-                const u8 d1 = static_cast<u8>(d[pos++] & 0x7Fu);
+                const u8 d1 = as<u8>(d[pos++] & 0x7Fu);
                 u8 d2 = 0;
                 if (msg_type != 0xC0u && msg_type != 0xD0u) {
                     if (pos >= trk_end) [[unlikely]] {
                         return ErrorCode::EndOfFile;
                     }
-                    d2 = static_cast<u8>(d[pos++] & 0x7Fu);
+                    d2 = as<u8>(d[pos++] & 0x7Fu);
                 }
 
                 if (msg_type == 0x90u && d2 > 0u) {
@@ -280,7 +280,7 @@ struct ParsedSmf {
                         node->velocity = d2;
                         node->next = nullptr;
 
-                        ActiveNoteQueue& q = active_slots[(static_cast<usize>(ch) << 7) | static_cast<usize>(d1)];
+                        ActiveNoteQueue& q = active_slots[(as<usize>(ch) << 7) | as<usize>(d1)];
                         if (q.tail) {
                             q.tail->next = node;
                             q.tail = node;
@@ -290,7 +290,7 @@ struct ParsedSmf {
                         }
                     }
                 } else if (build_notes && (msg_type == 0x80u || (msg_type == 0x90u && d2 == 0u))) {
-                    ActiveNoteQueue& q = active_slots[(static_cast<usize>(ch) << 7) | static_cast<usize>(d1)];
+                    ActiveNoteQueue& q = active_slots[(as<usize>(ch) << 7) | as<usize>(d1)];
                     if (q.head) {
                         ActiveNoteNode* node = q.head;
                         q.head = node->next;
@@ -329,9 +329,9 @@ struct ParsedSmf {
         } else {
             const TempoSegment& prev = segments.back();
             const u64 dt = ev.tick - prev.tick;
-            const f64 sec_per_tick = (static_cast<f64>(prev.us_per_quarter) / 1000000.0) / static_cast<f64>(tpqn);
+            const f64 sec_per_tick = (as<f64>(prev.us_per_quarter) / 1000000.0) / as<f64>(tpqn);
             segments.push_back(
-                TempoSegment{ev.tick, prev.time_sec + static_cast<f64>(dt) * sec_per_tick, ev.us_per_quarter});
+                TempoSegment{ev.tick, prev.time_sec + as<f64>(dt) * sec_per_tick, ev.us_per_quarter});
         }
     }
 
@@ -339,7 +339,7 @@ struct ParsedSmf {
     out.format = format;
     out.num_tracks = num_tracks;
     out.tpqn = tpqn;
-    out.initial_tempo_bpm = 60000000.0 / static_cast<f64>(segments[0].us_per_quarter);
+    out.initial_tempo_bpm = 60000000.0 / as<f64>(segments[0].us_per_quarter);
     out.duration_sec = tick_to_seconds(max_tick, segments.as_ref(), tpqn);
     out.note_on_count = note_on_count;
     out.track_name = keel::move(first_track_name);
@@ -403,9 +403,9 @@ Result<Array<u8>> encode_midi(ArrayRef<MidiNote> notes, const MidiEncodeOptions&
     if (!(us_raw >= 1.0 && us_raw <= 16777215.0)) [[unlikely]] {
         return ErrorCode::InvalidArgument;
     }
-    const u32 us_per_quarter = static_cast<u32>(us_raw);
+    const u32 us_per_quarter = as<u32>(us_raw);
     const f64 seconds_per_tick =
-        (static_cast<f64>(us_per_quarter) / 1000000.0) / static_cast<f64>(opts.ticks_per_quarter_note);
+        (as<f64>(us_per_quarter) / 1000000.0) / as<f64>(opts.ticks_per_quarter_note);
 
     struct MidiOutEvent {
         u64 tick = 0;
@@ -437,22 +437,22 @@ Result<Array<u8>> encode_midi(ArrayRef<MidiNote> notes, const MidiEncodeOptions&
             end_sec = n.start_time_sec + n.duration_sec;
         }
 
-        const u64 start_tick = static_cast<u64>(std::llround(n.start_time_sec / seconds_per_tick));
-        u64 end_tick = static_cast<u64>(std::llround(end_sec / seconds_per_tick));
+        const u64 start_tick = as<u64>(std::llround(n.start_time_sec / seconds_per_tick));
+        u64 end_tick = as<u64>(std::llround(end_sec / seconds_per_tick));
         if (end_tick <= start_tick) {
             end_tick = start_tick + 1ULL;
         }
 
-        const u8 ch = static_cast<u8>(n.channel & 0x0Fu);
+        const u8 ch = as<u8>(n.channel & 0x0Fu);
         const u8 vel = (n.velocity == 0u) ? u8{1} : n.velocity;
-        events.push_back(MidiOutEvent{start_tick, order_seq++, static_cast<u8>(0x90u | ch), n.note_number, vel});
-        events.push_back(MidiOutEvent{end_tick, order_seq++, static_cast<u8>(0x80u | ch), n.note_number, 0u});
+        events.push_back(MidiOutEvent{start_tick, order_seq++, as<u8>(0x90u | ch), n.note_number, vel});
+        events.push_back(MidiOutEvent{end_tick, order_seq++, as<u8>(0x80u | ch), n.note_number, 0u});
     }
 
     keel::sort(events, [](const MidiOutEvent& a, const MidiOutEvent& b) {
         if (a.tick != b.tick) return a.tick < b.tick;
-        const u8 ta = static_cast<u8>(a.status & 0xF0u);
-        const u8 tb = static_cast<u8>(b.status & 0xF0u);
+        const u8 ta = as<u8>(a.status & 0xF0u);
+        const u8 tb = as<u8>(b.status & 0xF0u);
         if (ta != tb) return ta < tb; // Note-Off (0x80) before Note-On (0x90) at identical tick
         return a.order < b.order;
     });
@@ -464,9 +464,9 @@ Result<Array<u8>> encode_midi(ArrayRef<MidiNote> notes, const MidiEncodeOptions&
     trk_payload.push_back(0xFFu);
     trk_payload.push_back(0x51u);
     trk_payload.push_back(0x03u);
-    trk_payload.push_back(static_cast<u8>((us_per_quarter >> 16) & 0xFFu));
-    trk_payload.push_back(static_cast<u8>((us_per_quarter >> 8) & 0xFFu));
-    trk_payload.push_back(static_cast<u8>(us_per_quarter & 0xFFu));
+    trk_payload.push_back(as<u8>((us_per_quarter >> 16) & 0xFFu));
+    trk_payload.push_back(as<u8>((us_per_quarter >> 8) & 0xFFu));
+    trk_payload.push_back(as<u8>(us_per_quarter & 0xFFu));
 
     u64 last_tick = 0;
     for (usize i = 0; i < events.size(); ++i) {
@@ -475,7 +475,7 @@ Result<Array<u8>> encode_midi(ArrayRef<MidiNote> notes, const MidiEncodeOptions&
         if (delta > 0x0FFFFFFFULL) [[unlikely]] {
             return ErrorCode::OutOfRange;
         }
-        midi_detail::write_vlq(trk_payload, static_cast<u32>(delta));
+        midi_detail::write_vlq(trk_payload, as<u32>(delta));
         trk_payload.push_back(ev.status);
         trk_payload.push_back(ev.data1);
         trk_payload.push_back(ev.data2);
@@ -500,7 +500,7 @@ Result<Array<u8>> encode_midi(ArrayRef<MidiNote> notes, const MidiEncodeOptions&
     audio_detail::write_u16_be(out, opts.ticks_per_quarter_note);
 
     audio_detail::write_fourcc(out, "MTrk");
-    audio_detail::write_u32_be(out, static_cast<u32>(trk_payload.size()));
+    audio_detail::write_u32_be(out, as<u32>(trk_payload.size()));
     out.append(ArrayRef<u8>(trk_payload.data(), trk_payload.size()));
 
     return out;

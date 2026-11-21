@@ -27,16 +27,16 @@ public:
             if (m_pos >= m_len) [[unlikely]] {
                 m_overrun = true;
                 if (m_bits_left == 0) return 0;
-                const u32 res = static_cast<u32>(m_bit_buf << (n - m_bits_left));
+                const u32 res = as<u32>(m_bit_buf << (n - m_bits_left));
                 m_bits_left = 0;
                 return res;
             }
-            m_bit_buf = (m_bit_buf << 8) | static_cast<u64>(m_data[m_pos++]);
+            m_bit_buf = (m_bit_buf << 8) | as<u64>(m_data[m_pos++]);
             m_bits_left += 8;
         }
         m_bits_left -= n;
         const u64 mask = (n == 32) ? 0xFFFFFFFFULL : ((u64{1} << n) - 1ULL);
-        return static_cast<u32>((m_bit_buf >> m_bits_left) & mask);
+        return as<u32>((m_bit_buf >> m_bits_left) & mask);
     }
 
     [[nodiscard]] u64 read_bits64(unsigned n) noexcept {
@@ -49,12 +49,12 @@ public:
     [[nodiscard]] i64 read_signed_bits(unsigned n) noexcept {
         if (n == 0) return 0;
         const u64 u = read_bits64(n);
-        if (n >= 64) return static_cast<i64>(u);
+        if (n >= 64) return as<i64>(u);
         const u64 sign_bit = u64{1} << (n - 1);
         if ((u & sign_bit) != 0ULL) {
-            return static_cast<i64>(u | (~((u64{1} << n) - 1ULL)));
+            return as<i64>(u | (~((u64{1} << n) - 1ULL)));
         }
-        return static_cast<i64>(u);
+        return as<i64>(u);
     }
 
     [[nodiscard]] u32 read_unary() noexcept {
@@ -65,7 +65,7 @@ public:
                     m_overrun = true;
                     return count;
                 }
-                m_bit_buf = (m_bit_buf << 8) | static_cast<u64>(m_data[m_pos++]);
+                m_bit_buf = (m_bit_buf << 8) | as<u64>(m_data[m_pos++]);
                 m_bits_left += 8;
             }
             --m_bits_left;
@@ -82,9 +82,9 @@ public:
         const u64 lsbs = (k > 0) ? read_bits64(k) : 0ULL;
         const u64 uval = (msbs << k) | lsbs;
         if ((uval & 1ULL) != 0ULL) {
-            return -static_cast<i64>((uval >> 1) + 1ULL);
+            return -as<i64>((uval >> 1) + 1ULL);
         }
-        return static_cast<i64>(uval >> 1);
+        return as<i64>(uval >> 1);
     }
 
     [[nodiscard]] u64 read_utf8_coded() noexcept {
@@ -166,12 +166,12 @@ struct FlacStreamHeader {
             return ErrorCode::EndOfFile;
         }
         is_last = (d[pos] & 0x80u) != 0u;
-        const u8 block_type = static_cast<u8>(d[pos] & 0x7Fu);
+        const u8 block_type = as<u8>(d[pos] & 0x7Fu);
         if (block_type == 127u) [[unlikely]] {
             return ErrorCode::InvalidData;
         }
-        const u32 block_size = (static_cast<u32>(d[pos + 1]) << 16) | (static_cast<u32>(d[pos + 2]) << 8) |
-                               static_cast<u32>(d[pos + 3]);
+        const u32 block_size = (as<u32>(d[pos + 1]) << 16) | (as<u32>(d[pos + 2]) << 8) |
+                               as<u32>(d[pos + 3]);
         pos += 4;
         if (block_size > len - pos) [[unlikely]] {
             return ErrorCode::EndOfFile;
@@ -192,7 +192,7 @@ struct FlacStreamHeader {
             st.total_frames = br.read_bits64(36);
             has_streaminfo = true;
         } else if (block_type == 4 && block_size >= 8) {
-            const usize block_end = pos + static_cast<usize>(block_size);
+            const usize block_end = pos + as<usize>(block_size);
             usize cpos = pos;
             const u32 vendor_len = audio_detail::read_u32_le(d + cpos);
             cpos += 4;
@@ -246,11 +246,11 @@ struct FlacStreamHeader {
     }
     const u32 partition_order = br.read_bits(4);
     const usize num_partitions = usize{1} << partition_order;
-    if ((static_cast<usize>(block_size) % num_partitions) != 0u) [[unlikely]] {
+    if ((as<usize>(block_size) % num_partitions) != 0u) [[unlikely]] {
         return ErrorCode::InvalidData;
     }
-    const usize part_samples = static_cast<usize>(block_size) / num_partitions;
-    if (part_samples < static_cast<usize>(predictor_order)) [[unlikely]] {
+    const usize part_samples = as<usize>(block_size) / num_partitions;
+    if (part_samples < as<usize>(predictor_order)) [[unlikely]] {
         return ErrorCode::InvalidData;
     }
 
@@ -258,7 +258,7 @@ struct FlacStreamHeader {
     const u32 rice_escape = (coding_method == 0u) ? 0x0Fu : 0x1Fu;
 
     for (usize p = 0; p < num_partitions; ++p) {
-        const usize p_start = (p == 0) ? static_cast<usize>(predictor_order) : (p * part_samples);
+        const usize p_start = (p == 0) ? as<usize>(predictor_order) : (p * part_samples);
         const usize p_end = (p + 1) * part_samples;
         const u32 k = br.read_bits(rice_param_bits);
         if (br.overrun()) [[unlikely]] {
@@ -298,12 +298,12 @@ Result<AudioInfo> peek_flac(ArrayRef<u8> bytes, Allocator* alloc) {
     info.format = AudioFormat::Flac;
     info.compression_method = String("FLAC Lossless", dst_alloc);
     info.channels = st.channels;
-    info.sample_rate = static_cast<f64>(st.sample_rate);
-    info.bits_per_sample = static_cast<u16>(st.bits_per_sample);
+    info.sample_rate = as<f64>(st.sample_rate);
+    info.bits_per_sample = as<u16>(st.bits_per_sample);
     info.total_frames = st.total_frames;
-    info.duration_sec = static_cast<f64>(st.total_frames) / info.sample_rate;
+    info.duration_sec = as<f64>(st.total_frames) / info.sample_rate;
     if (info.duration_sec > 0.0 && !bytes.empty()) {
-        info.bit_rate_kbps = static_cast<u32>((static_cast<f64>(bytes.size()) * 8.0) / (info.duration_sec * 1000.0));
+        info.bit_rate_kbps = as<u32>((as<f64>(bytes.size()) * 8.0) / (info.duration_sec * 1000.0));
     }
     info.metadata = keel::move(st.metadata);
     return info;
@@ -317,7 +317,7 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
     Allocator* dst_alloc = opts.allocator ? opts.allocator : default_allocator();
     KEEL_TRY_ASSIGN(flac_detail::FlacStreamHeader st, flac_detail::parse_flac_metadata(bytes, dst_alloc));
 
-    const u16 num_channels = static_cast<u16>(st.channels);
+    const u16 num_channels = as<u16>(st.channels);
     const u64 total_expected = st.total_frames;
 
     if (total_expected > 0 && st.audio_offset >= bytes.size()) [[unlikely]] {
@@ -410,7 +410,7 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
         for (u16 ch = 0; ch < num_channels; ++ch) {
             subframe_buffers[ch].resize(block_size);
             i64* samples = subframe_buffers[ch].data();
-            mem_zero(samples, static_cast<usize>(block_size) * sizeof(i64));
+            mem_zero(samples, as<usize>(block_size) * sizeof(i64));
 
             const u32 zero_bit = br.read_bits(1);
             const u32 subframe_type = br.read_bits(6);
@@ -495,7 +495,7 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
                     return ErrorCode::InvalidData;
                 }
                 const unsigned qlp_precision = qlp_prec_raw + 1u;
-                const i32 qlp_shift = static_cast<i32>(br.read_signed_bits(5));
+                const i32 qlp_shift = as<i32>(br.read_signed_bits(5));
                 i64 qlp_coeffs[32]{};
                 for (unsigned i = 0; i < order; ++i) {
                     qlp_coeffs[i] = br.read_signed_bits(qlp_precision);
@@ -515,7 +515,7 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
                     if (qlp_shift >= 0) {
                         sum >>= qlp_shift;
                     } else {
-                        sum = static_cast<i64>(static_cast<u64>(sum) << (-qlp_shift));
+                        sum = as<i64>(as<u64>(sum) << (-qlp_shift));
                     }
                     samples[i] += sum;
                 }
@@ -525,7 +525,7 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
 
             if (wasted_bits > 0u) {
                 for (u32 i = 0; i < block_size; ++i) {
-                    samples[i] = static_cast<i64>(static_cast<u64>(samples[i]) << wasted_bits);
+                    samples[i] = as<i64>(as<u64>(samples[i]) << wasted_bits);
                 }
             }
         }
@@ -570,15 +570,15 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
         if (win_hi > win_lo) {
             const u64 add_count = win_hi - win_lo;
             if (opts.max_frames > 0 &&
-                static_cast<u64>(channel_buffers[0].size()) + add_count > opts.max_frames) [[unlikely]] {
+                as<u64>(channel_buffers[0].size()) + add_count > opts.max_frames) [[unlikely]] {
                 return ErrorCode::OutOfRange;
             }
-            const usize local_off = static_cast<usize>(win_lo - block_start);
-            const usize local_cnt = static_cast<usize>(add_count);
+            const usize local_off = as<usize>(win_lo - block_start);
+            const usize local_cnt = as<usize>(add_count);
             for (u16 ch = 0; ch < num_channels; ++ch) {
                 const i64* src = subframe_buffers[ch].data() + local_off;
                 for (usize k = 0; k < local_cnt; ++k) {
-                    channel_buffers[ch].push_back(static_cast<i32>(src[k]));
+                    channel_buffers[ch].push_back(as<i32>(src[k]));
                 }
             }
         }
@@ -594,7 +594,7 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
     }
 
     const u64 available_frames = stream_cursor;
-    const u64 out_frames = static_cast<u64>(channel_buffers[0].size());
+    const u64 out_frames = as<u64>(channel_buffers[0].size());
     if (opts.max_frames > 0 && out_frames > opts.max_frames) [[unlikely]] {
         return ErrorCode::OutOfRange;
     }
@@ -603,8 +603,8 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
         opts.native_sample_type ? flac_detail::flac_native_sample_type(st.bits_per_sample) : AudioSampleType::F64;
 
     AudioBuffer res;
-    res.sample_rate = static_cast<f64>(st.sample_rate);
-    res.bits_per_sample = static_cast<u16>(st.bits_per_sample);
+    res.sample_rate = as<f64>(st.sample_rate);
+    res.bits_per_sample = as<u16>(st.bits_per_sample);
     res.channels = num_channels;
     res.frames = out_frames;
     res.total_source_frames = available_frames;
@@ -620,13 +620,13 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
     KEEL_TRY_ASSIGN(res.data, audio_detail::alloc_sample_buffer(out_frames, num_channels, out_type, dst_alloc));
 
     if (!opts.native_sample_type) {
-        const f64 scale = 1.0 / static_cast<f64>(u64{1} << (st.bits_per_sample - 1u));
+        const f64 scale = 1.0 / as<f64>(u64{1} << (st.bits_per_sample - 1u));
         f64* dst = res.samples_f64().data();
         for (u16 ch = 0; ch < num_channels; ++ch) {
             const i32* src = channel_buffers[ch].data();
             for (u64 t = 0; t < out_frames; ++t) {
                 dst[audio_detail::sample_index(t, ch, out_frames, num_channels, opts.layout)] =
-                    static_cast<f64>(src[static_cast<usize>(t)]) * scale;
+                    as<f64>(src[as<usize>(t)]) * scale;
             }
         }
     } else if (out_type == AudioSampleType::I8) {
@@ -635,7 +635,7 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
             const i32* src = channel_buffers[ch].data();
             for (u64 t = 0; t < out_frames; ++t) {
                 dst[audio_detail::sample_index(t, ch, out_frames, num_channels, opts.layout)] =
-                    static_cast<i8>(src[static_cast<usize>(t)]);
+                    as<i8>(src[as<usize>(t)]);
             }
         }
     } else if (out_type == AudioSampleType::I16) {
@@ -644,7 +644,7 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
             const i32* src = channel_buffers[ch].data();
             for (u64 t = 0; t < out_frames; ++t) {
                 dst[audio_detail::sample_index(t, ch, out_frames, num_channels, opts.layout)] =
-                    static_cast<i16>(src[static_cast<usize>(t)]);
+                    as<i16>(src[as<usize>(t)]);
             }
         }
     } else {
@@ -653,7 +653,7 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
             const i32* src = channel_buffers[ch].data();
             for (u64 t = 0; t < out_frames; ++t) {
                 dst[audio_detail::sample_index(t, ch, out_frames, num_channels, opts.layout)] =
-                    src[static_cast<usize>(t)];
+                    src[as<usize>(t)];
             }
         }
     }

@@ -44,7 +44,7 @@ WavChunks scan_wav_chunks(const u8* data, usize len) noexcept {
             }
         }
 
-        usize advance = static_cast<usize>(csize);
+        usize advance = as<usize>(csize);
         if ((advance & 1u) != 0u) {
             if (advance == ~usize{0}) break;
             ++advance;
@@ -61,7 +61,7 @@ void parse_list_info(const u8* data, usize len, const RiffChunk& list_chunk, Aud
     if (!list_chunk.found || list_chunk.size < 4 || list_chunk.size > len - list_chunk.offset) {
         return;
     }
-    const usize end = list_chunk.offset + static_cast<usize>(list_chunk.size);
+    const usize end = list_chunk.offset + as<usize>(list_chunk.size);
     if (!mem_eq(data + list_chunk.offset, "INFO", 4)) {
         return;
     }
@@ -85,7 +85,7 @@ void parse_list_info(const u8* data, usize len, const RiffChunk& list_chunk, Aud
             }
         }
 
-        usize step = static_cast<usize>(sub_size);
+        usize step = as<usize>(sub_size);
         if ((step & 1u) != 0u && step < end - pos) {
             ++step;
         }
@@ -159,9 +159,9 @@ Result<AudioInfo> peek_wav(ArrayRef<u8> bytes, Allocator* alloc) {
     AudioInfo info;
     info.format = AudioFormat::Wav;
     info.channels = num_channels;
-    info.sample_rate = static_cast<f64>(sample_rate);
+    info.sample_rate = as<f64>(sample_rate);
     info.bits_per_sample = bits_per_sample;
-    info.bit_rate_kbps = static_cast<u32>((static_cast<u64>(byte_rate) * 8ULL) / 1000ULL);
+    info.bit_rate_kbps = as<u32>((as<u64>(byte_rate) * 8ULL) / 1000ULL);
 
     switch (format_tag) {
         case 1:
@@ -182,13 +182,13 @@ Result<AudioInfo> peek_wav(ArrayRef<u8> bytes, Allocator* alloc) {
     }
 
     if (block_align == 0 && bits_per_sample > 0) {
-        block_align = static_cast<u16>(num_channels * ((bits_per_sample + 7u) / 8u));
+        block_align = as<u16>(num_channels * ((bits_per_sample + 7u) / 8u));
     }
     if (chunks.data.found && block_align > 0) {
-        info.total_frames = static_cast<u64>(chunks.data.size) / static_cast<u64>(block_align);
-        info.duration_sec = static_cast<f64>(info.total_frames) / info.sample_rate;
+        info.total_frames = as<u64>(chunks.data.size) / as<u64>(block_align);
+        info.duration_sec = as<f64>(info.total_frames) / info.sample_rate;
         if (info.bit_rate_kbps == 0 && info.duration_sec > 0.0) {
-            info.bit_rate_kbps = static_cast<u32>((static_cast<f64>(len) * 8.0) / (info.duration_sec * 1000.0));
+            info.bit_rate_kbps = as<u32>((as<f64>(len) * 8.0) / (info.duration_sec * 1000.0));
         }
     }
 
@@ -236,18 +236,18 @@ Result<AudioBuffer> decode_wav(ArrayRef<u8> bytes, const AudioDecodeOptions& opt
         return ErrorCode::NotSupported;
     }
 
-    const usize bytes_per_sample = static_cast<usize>((bits_per_sample + 7u) / 8u);
-    const usize min_block_align = static_cast<usize>(num_channels) * bytes_per_sample;
-    const usize frame_stride = (block_align >= min_block_align) ? static_cast<usize>(block_align) : min_block_align;
+    const usize bytes_per_sample = as<usize>((bits_per_sample + 7u) / 8u);
+    const usize min_block_align = as<usize>(num_channels) * bytes_per_sample;
+    const usize frame_stride = (block_align >= min_block_align) ? as<usize>(block_align) : min_block_align;
 
-    const u64 available_frames = static_cast<u64>(chunks.data.size) / static_cast<u64>(frame_stride);
+    const u64 available_frames = as<u64>(chunks.data.size) / as<u64>(frame_stride);
     KEEL_TRY_ASSIGN(const audio_detail::FrameWindow win, audio_detail::compute_frame_window(available_frames, opts));
 
     const AudioSampleType out_type =
         opts.native_sample_type ? wav_detail::wav_native_sample_type(format_tag, bits_per_sample) : AudioSampleType::F64;
 
     AudioBuffer res;
-    res.sample_rate = static_cast<f64>(sample_rate);
+    res.sample_rate = as<f64>(sample_rate);
     res.bits_per_sample = bits_per_sample;
     res.channels = num_channels;
     res.frames = win.count;
@@ -265,42 +265,42 @@ Result<AudioBuffer> decode_wav(ArrayRef<u8> bytes, const AudioDecodeOptions& opt
         return ErrorCode::EndOfFile;
     }
     const u64 end_frame = win.start + win.count;
-    if (end_frame > static_cast<u64>(len - chunks.data.offset) / static_cast<u64>(frame_stride)) [[unlikely]] {
+    if (end_frame > as<u64>(len - chunks.data.offset) / as<u64>(frame_stride)) [[unlikely]] {
         return ErrorCode::EndOfFile;
     }
 
     KEEL_TRY_ASSIGN(res.data, audio_detail::alloc_sample_buffer(win.count, num_channels, out_type, dst_alloc));
 
-    const u8* raw_samples = d + chunks.data.offset + static_cast<usize>(win.start) * frame_stride;
+    const u8* raw_samples = d + chunks.data.offset + as<usize>(win.start) * frame_stride;
     const u64 nframes = win.count;
 
     if (!opts.native_sample_type) {
         f64* dst = res.samples_f64().data();
         for (u64 t = 0; t < nframes; ++t) {
-            const u8* frame = raw_samples + static_cast<usize>(t) * frame_stride;
+            const u8* frame = raw_samples + as<usize>(t) * frame_stride;
             for (u16 ch = 0; ch < num_channels; ++ch) {
-                const u8* s = frame + static_cast<usize>(ch) * bytes_per_sample;
+                const u8* s = frame + as<usize>(ch) * bytes_per_sample;
                 f64 val = 0.0;
                 if (format_tag == 1) {
                     if (bits_per_sample == 8) {
-                        val = (static_cast<f64>(*s) - 128.0) / 128.0;
+                        val = (as<f64>(*s) - 128.0) / 128.0;
                     } else if (bits_per_sample == 16) {
-                        val = static_cast<f64>(audio_detail::read_i16_le(s)) / 32768.0;
+                        val = as<f64>(audio_detail::read_i16_le(s)) / 32768.0;
                     } else if (bits_per_sample == 24) {
-                        val = static_cast<f64>(audio_detail::read_i24_le(s)) / 8388608.0;
+                        val = as<f64>(audio_detail::read_i24_le(s)) / 8388608.0;
                     } else if (bits_per_sample == 32) {
-                        val = static_cast<f64>(audio_detail::read_i32_le(s)) / 2147483648.0;
+                        val = as<f64>(audio_detail::read_i32_le(s)) / 2147483648.0;
                     }
                 } else if (format_tag == 3) {
                     if (bits_per_sample == 32) {
-                        val = static_cast<f64>(audio_detail::read_f32_le(s));
+                        val = as<f64>(audio_detail::read_f32_le(s));
                     } else {
                         val = audio_detail::read_f64_le(s);
                     }
                 } else if (format_tag == 6) {
-                    val = static_cast<f64>(audio_detail::decode_a_law(*s)) / 32768.0;
+                    val = as<f64>(audio_detail::decode_a_law(*s)) / 32768.0;
                 } else if (format_tag == 7) {
-                    val = static_cast<f64>(audio_detail::decode_mu_law(*s)) / 32768.0;
+                    val = as<f64>(audio_detail::decode_mu_law(*s)) / 32768.0;
                 }
                 dst[audio_detail::sample_index(t, ch, nframes, num_channels, opts.layout)] = val;
             }
@@ -308,25 +308,25 @@ Result<AudioBuffer> decode_wav(ArrayRef<u8> bytes, const AudioDecodeOptions& opt
     } else if (out_type == AudioSampleType::F32) {
         f32* dst = res.samples_f32().data();
         for (u64 t = 0; t < nframes; ++t) {
-            const u8* frame = raw_samples + static_cast<usize>(t) * frame_stride;
+            const u8* frame = raw_samples + as<usize>(t) * frame_stride;
             for (u16 ch = 0; ch < num_channels; ++ch) {
                 dst[audio_detail::sample_index(t, ch, nframes, num_channels, opts.layout)] =
-                    audio_detail::read_f32_le(frame + static_cast<usize>(ch) * 4);
+                    audio_detail::read_f32_le(frame + as<usize>(ch) * 4);
             }
         }
     } else if (out_type == AudioSampleType::F64) {
         f64* dst = res.samples_f64().data();
         for (u64 t = 0; t < nframes; ++t) {
-            const u8* frame = raw_samples + static_cast<usize>(t) * frame_stride;
+            const u8* frame = raw_samples + as<usize>(t) * frame_stride;
             for (u16 ch = 0; ch < num_channels; ++ch) {
                 dst[audio_detail::sample_index(t, ch, nframes, num_channels, opts.layout)] =
-                    audio_detail::read_f64_le(frame + static_cast<usize>(ch) * 8);
+                    audio_detail::read_f64_le(frame + as<usize>(ch) * 8);
             }
         }
     } else if (out_type == AudioSampleType::U8) {
         u8* dst = res.samples_u8().data();
         for (u64 t = 0; t < nframes; ++t) {
-            const u8* frame = raw_samples + static_cast<usize>(t) * frame_stride;
+            const u8* frame = raw_samples + as<usize>(t) * frame_stride;
             for (u16 ch = 0; ch < num_channels; ++ch) {
                 dst[audio_detail::sample_index(t, ch, nframes, num_channels, opts.layout)] = frame[ch];
             }
@@ -334,7 +334,7 @@ Result<AudioBuffer> decode_wav(ArrayRef<u8> bytes, const AudioDecodeOptions& opt
     } else if (out_type == AudioSampleType::I16) {
         i16* dst = res.samples_i16().data();
         for (u64 t = 0; t < nframes; ++t) {
-            const u8* frame = raw_samples + static_cast<usize>(t) * frame_stride;
+            const u8* frame = raw_samples + as<usize>(t) * frame_stride;
             for (u16 ch = 0; ch < num_channels; ++ch) {
                 i16 val = 0;
                 if (format_tag == 6) {
@@ -342,7 +342,7 @@ Result<AudioBuffer> decode_wav(ArrayRef<u8> bytes, const AudioDecodeOptions& opt
                 } else if (format_tag == 7) {
                     val = audio_detail::decode_mu_law(frame[ch]);
                 } else {
-                    val = audio_detail::read_i16_le(frame + static_cast<usize>(ch) * 2);
+                    val = audio_detail::read_i16_le(frame + as<usize>(ch) * 2);
                 }
                 dst[audio_detail::sample_index(t, ch, nframes, num_channels, opts.layout)] = val;
             }
@@ -350,11 +350,11 @@ Result<AudioBuffer> decode_wav(ArrayRef<u8> bytes, const AudioDecodeOptions& opt
     } else {
         i32* dst = res.samples_i32().data();
         for (u64 t = 0; t < nframes; ++t) {
-            const u8* frame = raw_samples + static_cast<usize>(t) * frame_stride;
+            const u8* frame = raw_samples + as<usize>(t) * frame_stride;
             for (u16 ch = 0; ch < num_channels; ++ch) {
                 const i32 val = (bits_per_sample == 24)
-                                    ? audio_detail::read_i24_le(frame + static_cast<usize>(ch) * 3)
-                                    : audio_detail::read_i32_le(frame + static_cast<usize>(ch) * 4);
+                                    ? audio_detail::read_i24_le(frame + as<usize>(ch) * 3)
+                                    : audio_detail::read_i32_le(frame + as<usize>(ch) * 4);
                 dst[audio_detail::sample_index(t, ch, nframes, num_channels, opts.layout)] = val;
             }
         }
@@ -377,24 +377,24 @@ Result<Array<u8>> encode_wav(const AudioView& view, const AudioEncodeOptions& op
     }
 
     const u16 format_tag = use_float ? u16{3} : u16{1};
-    const usize bytes_per_sample = static_cast<usize>(bps / 8u);
-    const usize block_align = static_cast<usize>(view.channels) * bytes_per_sample;
+    const usize bytes_per_sample = as<usize>(bps / 8u);
+    const usize block_align = as<usize>(view.channels) * bytes_per_sample;
     if (block_align > 0xFFFFu) [[unlikely]] {
         return ErrorCode::OutOfRange;
     }
 
     const f64 sr_rounded = std::round(view.sample_rate);
-    if (!(sr_rounded >= 1.0 && sr_rounded <= static_cast<f64>(0xFFFFFFFFu))) [[unlikely]] {
+    if (!(sr_rounded >= 1.0 && sr_rounded <= as<f64>(0xFFFFFFFFu))) [[unlikely]] {
         return ErrorCode::InvalidArgument;
     }
-    const u32 sample_rate_u32 = static_cast<u32>(sr_rounded);
-    const u64 byte_rate_u64 = static_cast<u64>(sample_rate_u32) * static_cast<u64>(block_align);
-    const u32 byte_rate = (byte_rate_u64 > 0xFFFFFFFFULL) ? 0xFFFFFFFFu : static_cast<u32>(byte_rate_u64);
+    const u32 sample_rate_u32 = as<u32>(sr_rounded);
+    const u64 byte_rate_u64 = as<u64>(sample_rate_u32) * as<u64>(block_align);
+    const u32 byte_rate = (byte_rate_u64 > 0xFFFFFFFFULL) ? 0xFFFFFFFFu : as<u32>(byte_rate_u64);
 
-    if (view.frames > 0xFFFFFFFFULL / static_cast<u64>(block_align)) [[unlikely]] {
+    if (view.frames > 0xFFFFFFFFULL / as<u64>(block_align)) [[unlikely]] {
         return ErrorCode::OutOfRange;
     }
-    const u64 data_size_u64 = view.frames * static_cast<u64>(block_align);
+    const u64 data_size_u64 = view.frames * as<u64>(block_align);
     const u64 data_padded = data_size_u64 + (data_size_u64 & 1ULL);
 
     Allocator* dst_alloc = opts.allocator ? opts.allocator : default_allocator();
@@ -408,7 +408,7 @@ Result<Array<u8>> encode_wav(const AudioView& view, const AudioEncodeOptions& op
                 return ErrorCode::OutOfRange;
             }
             audio_detail::write_fourcc(list_info, id);
-            const u32 sz = static_cast<u32>(text.size() + 1u);
+            const u32 sz = as<u32>(text.size() + 1u);
             audio_detail::write_u32_le(list_info, sz);
             list_info.append(ArrayRef<u8>(reinterpret_cast<const u8*>(text.data()), text.size()));
             list_info.push_back(0u);
@@ -426,16 +426,16 @@ Result<Array<u8>> encode_wav(const AudioView& view, const AudioEncodeOptions& op
         }
     }
 
-    const u64 list_total = list_info.empty() ? 0ULL : (8ULL + static_cast<u64>(list_info.size()));
+    const u64 list_total = list_info.empty() ? 0ULL : (8ULL + as<u64>(list_info.size()));
     const u64 riff_size_u64 = 4ULL + (8ULL + 16ULL) + (8ULL + data_padded) + list_total;
     if (riff_size_u64 > 0xFFFFFFFFULL) [[unlikely]] {
         return ErrorCode::OutOfRange;
     }
 
-    Array<u8> out = Array<u8>::with_capacity(static_cast<usize>(riff_size_u64 + 8ULL), dst_alloc);
+    Array<u8> out = Array<u8>::with_capacity(as<usize>(riff_size_u64 + 8ULL), dst_alloc);
 
     audio_detail::write_fourcc(out, "RIFF");
-    audio_detail::write_u32_le(out, static_cast<u32>(riff_size_u64));
+    audio_detail::write_u32_le(out, as<u32>(riff_size_u64));
     audio_detail::write_fourcc(out, "WAVE");
 
     audio_detail::write_fourcc(out, "fmt ");
@@ -444,11 +444,11 @@ Result<Array<u8>> encode_wav(const AudioView& view, const AudioEncodeOptions& op
     audio_detail::write_u16_le(out, view.channels);
     audio_detail::write_u32_le(out, sample_rate_u32);
     audio_detail::write_u32_le(out, byte_rate);
-    audio_detail::write_u16_le(out, static_cast<u16>(block_align));
+    audio_detail::write_u16_le(out, as<u16>(block_align));
     audio_detail::write_u16_le(out, bps);
 
     audio_detail::write_fourcc(out, "data");
-    audio_detail::write_u32_le(out, static_cast<u32>(data_size_u64));
+    audio_detail::write_u32_le(out, as<u32>(data_size_u64));
 
     for (u64 t = 0; t < view.frames; ++t) {
         for (u16 ch = 0; ch < view.channels; ++ch) {
@@ -462,11 +462,11 @@ Result<Array<u8>> encode_wav(const AudioView& view, const AudioEncodeOptions& op
             } else if (bps == 8) {
                 out.push_back(audio_detail::view_sample_u8_pcm(view, idx));
             } else if (bps == 16) {
-                audio_detail::write_u16_le(out, static_cast<u16>(audio_detail::view_sample_i16_pcm(view, idx)));
+                audio_detail::write_u16_le(out, as<u16>(audio_detail::view_sample_i16_pcm(view, idx)));
             } else if (bps == 24) {
                 audio_detail::write_i24_le(out, audio_detail::view_sample_i24_pcm(view, idx));
             } else {
-                audio_detail::write_u32_le(out, static_cast<u32>(audio_detail::view_sample_i32_pcm(view, idx)));
+                audio_detail::write_u32_le(out, as<u32>(audio_detail::view_sample_i32_pcm(view, idx)));
             }
         }
     }
@@ -476,7 +476,7 @@ Result<Array<u8>> encode_wav(const AudioView& view, const AudioEncodeOptions& op
 
     if (!list_info.empty()) {
         audio_detail::write_fourcc(out, "LIST");
-        audio_detail::write_u32_le(out, static_cast<u32>(list_info.size()));
+        audio_detail::write_u32_le(out, as<u32>(list_info.size()));
         out.append(ArrayRef<u8>(list_info.data(), list_info.size()));
     }
 

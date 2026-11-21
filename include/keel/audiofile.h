@@ -155,7 +155,7 @@ struct AudioBuffer {
     AudioMetadata metadata;
 
     [[nodiscard]] usize sample_count() const noexcept {
-        return static_cast<usize>(frames) * static_cast<usize>(channels);
+        return as<usize>(frames) * as<usize>(channels);
     }
 
     [[nodiscard]] ArrayRef<u8> samples_u8() const noexcept {

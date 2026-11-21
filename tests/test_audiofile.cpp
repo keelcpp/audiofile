@@ -35,8 +35,8 @@ constexpr f64 kPi = 3.14159265358979323846;
 class FlacBitWriter {
 public:
     void write_bits(u64 val, unsigned n) {
-        for (int i = static_cast<int>(n) - 1; i >= 0; --i) {
-            m_bit_buf = static_cast<u8>((m_bit_buf << 1) | static_cast<u8>((val >> i) & 1ULL));
+        for (int i = keel::as<int>(n) - 1; i >= 0; --i) {
+            m_bit_buf = keel::as<u8>((m_bit_buf << 1) | keel::as<u8>((val >> i) & 1ULL));
             if (++m_bit_count == 8u) {
                 m_data.push_back(m_bit_buf);
                 m_bit_buf = 0;
@@ -47,7 +47,7 @@ public:
 
     void write_signed_bits(i64 val, unsigned n) {
         const u64 mask = (n >= 64u) ? ~u64{0} : ((u64{1} << n) - 1ULL);
-        write_bits(static_cast<u64>(val) & mask, n);
+        write_bits(keel::as<u64>(val) & mask, n);
     }
 
     void write_unary(u32 zeros) {
@@ -59,8 +59,8 @@ public:
 
     void write_rice_signed(i64 val, unsigned k) {
         const u64 uval =
-            (val >= 0) ? (static_cast<u64>(val) << 1) : ((static_cast<u64>(-val - 1) << 1) | 1ULL);
-        const u32 msbs = static_cast<u32>(uval >> k);
+            (val >= 0) ? (keel::as<u64>(val) << 1) : ((keel::as<u64>(-val - 1) << 1) | 1ULL);
+        const u32 msbs = keel::as<u32>(uval >> k);
         write_unary(msbs);
         if (k > 0u) {
             write_bits(uval & ((u64{1} << k) - 1ULL), k);
@@ -87,10 +87,10 @@ public:
 
     void write_u32_le_bytes(u32 v) {
         align_to_byte();
-        m_data.push_back(static_cast<u8>(v & 0xFFu));
-        m_data.push_back(static_cast<u8>((v >> 8) & 0xFFu));
-        m_data.push_back(static_cast<u8>((v >> 16) & 0xFFu));
-        m_data.push_back(static_cast<u8>((v >> 24) & 0xFFu));
+        m_data.push_back(keel::as<u8>(v & 0xFFu));
+        m_data.push_back(keel::as<u8>((v >> 8) & 0xFFu));
+        m_data.push_back(keel::as<u8>((v >> 16) & 0xFFu));
+        m_data.push_back(keel::as<u8>((v >> 24) & 0xFFu));
     }
 
     void align_to_byte() {
@@ -134,10 +134,10 @@ void write_flac_stream_header(FlacBitWriter& bw, u32 block_size, u32 sample_rate
         const char* c0 = "TITLE=Lossless Track";
         const char* c1 = "ARTIST=Keel Audio";
         const char* c2 = "COMMENT=Synthetic FLAC";
-        const u32 vlen = static_cast<u32>(std::strlen(vendor));
-        const u32 l0 = static_cast<u32>(std::strlen(c0));
-        const u32 l1 = static_cast<u32>(std::strlen(c1));
-        const u32 l2 = static_cast<u32>(std::strlen(c2));
+        const u32 vlen = keel::as<u32>(std::strlen(vendor));
+        const u32 l0 = keel::as<u32>(std::strlen(c0));
+        const u32 l1 = keel::as<u32>(std::strlen(c1));
+        const u32 l2 = keel::as<u32>(std::strlen(c2));
         const u32 payload_len = 4u + vlen + 4u + (4u + l0) + (4u + l1) + (4u + l2);
 
         bw.write_bits(0x84u, 8); // is_last = 1, block_type = 4 (VORBIS_COMMENT)
@@ -223,10 +223,10 @@ void test_wav_codec() {
     const f64 fs = 44100.0;
 
     // Planar stereo F64 input -> encode_wav -> peek_wav -> decode_wav (Interleaved & Planar)
-    Array<f64> planar_in(static_cast<usize>(frames * 2));
+    Array<f64> planar_in(keel::as<usize>(frames * 2));
     for (u64 t = 0; t < frames; ++t) {
-        planar_in[static_cast<usize>(0 * frames + t)] = 0.8 * std::sin(2.0 * kPi * 440.0 * static_cast<f64>(t) / fs);
-        planar_in[static_cast<usize>(1 * frames + t)] = -0.5 * std::cos(2.0 * kPi * 880.0 * static_cast<f64>(t) / fs);
+        planar_in[keel::as<usize>(0 * frames + t)] = 0.8 * std::sin(2.0 * kPi * 440.0 * keel::as<f64>(t) / fs);
+        planar_in[keel::as<usize>(1 * frames + t)] = -0.5 * std::cos(2.0 * kPi * 880.0 * keel::as<f64>(t) / fs);
     }
 
     AudioView view_planar = AudioView::from_f64(planar_in, frames, 2, fs, AudioChannelLayout::Planar);
@@ -247,7 +247,7 @@ void test_wav_codec() {
     TEST_CHECK(info->sample_rate == 44100.0);
     TEST_CHECK(info->bits_per_sample == 16);
     TEST_CHECK(info->total_frames == frames);
-    TEST_CHECK(near_f64(info->duration_sec, static_cast<f64>(frames) / fs, 1e-9));
+    TEST_CHECK(near_f64(info->duration_sec, keel::as<f64>(frames) / fs, 1e-9));
     TEST_CHECK(info->metadata.title == "Sine Wave");
     TEST_CHECK(info->metadata.artist == "Keel DSP");
     TEST_CHECK(info->metadata.comment == "LIST INFO Metadata");
@@ -260,8 +260,8 @@ void test_wav_codec() {
     TEST_CHECK(dec_inter->metadata.title == "Sine Wave");
     ArrayRef<f64> s_inter = dec_inter->samples_f64();
     for (u64 t = 0; t < frames; ++t) {
-        TEST_CHECK(near_f64(s_inter[static_cast<usize>(t * 2 + 0)], planar_in[static_cast<usize>(t)], 1e-4));
-        TEST_CHECK(near_f64(s_inter[static_cast<usize>(t * 2 + 1)], planar_in[static_cast<usize>(frames + t)], 1e-4));
+        TEST_CHECK(near_f64(s_inter[keel::as<usize>(t * 2 + 0)], planar_in[keel::as<usize>(t)], 1e-4));
+        TEST_CHECK(near_f64(s_inter[keel::as<usize>(t * 2 + 1)], planar_in[keel::as<usize>(frames + t)], 1e-4));
     }
 
     // Decode Planar normalized F64 + partial range [100, 200)
@@ -275,15 +275,15 @@ void test_wav_codec() {
     TEST_CHECK(dec_slice->frames == 100 && dec_slice->total_source_frames == frames);
     ArrayRef<f64> s_slice = dec_slice->samples_f64();
     for (u64 t = 0; t < 100; ++t) {
-        TEST_CHECK(near_f64(s_slice[static_cast<usize>(t)], planar_in[static_cast<usize>(100 + t)], 1e-4));
-        TEST_CHECK(near_f64(s_slice[static_cast<usize>(100 + t)], planar_in[static_cast<usize>(frames + 100 + t)], 1e-4));
+        TEST_CHECK(near_f64(s_slice[keel::as<usize>(t)], planar_in[keel::as<usize>(100 + t)], 1e-4));
+        TEST_CHECK(near_f64(s_slice[keel::as<usize>(100 + t)], planar_in[keel::as<usize>(frames + 100 + t)], 1e-4));
     }
 
     // All bit depths + native sample types (8-bit U8, 16-bit I16, 24-bit I32, 32-bit I32, 32-bit F32, 64-bit F64)
     const u64 n = 127; // odd frame count to test RIFF chunk word-alignment padding
-    Array<f64> ramp(static_cast<usize>(n));
+    Array<f64> ramp(keel::as<usize>(n));
     for (u64 i = 0; i < n; ++i) {
-        ramp[static_cast<usize>(i)] = -0.9 + 1.8 * (static_cast<f64>(i) / static_cast<f64>(n - 1));
+        ramp[keel::as<usize>(i)] = -0.9 + 1.8 * (keel::as<f64>(i) / keel::as<f64>(n - 1));
     }
     AudioView mono_view = AudioView::from_f64(ramp, n, 1, 48000.0);
 
@@ -294,7 +294,7 @@ void test_wav_codec() {
     auto d8_f64 = decode_wav(*b8);
     TEST_CHECK(d8_nat.is_ok() && d8_nat->sample_type == AudioSampleType::U8 && d8_nat->metadata.title == "OddPad");
     TEST_CHECK(d8_f64.is_ok());
-    for (usize i = 0; i < static_cast<usize>(n); ++i) {
+    for (usize i = 0; i < keel::as<usize>(n); ++i) {
         TEST_CHECK(near_f64(d8_f64->samples_f64()[i], ramp[i], 0.02));
     }
     // Re-encode directly from U8 AudioView
@@ -308,7 +308,7 @@ void test_wav_codec() {
     auto d24_nat = decode_wav(*b24, AudioDecodeOptions{.native_sample_type = true});
     auto d24_f64 = decode_wav(*b24);
     TEST_CHECK(d24_nat.is_ok() && d24_nat->sample_type == AudioSampleType::I32 && d24_nat->metadata.artist == "Studio");
-    for (usize i = 0; i < static_cast<usize>(n); ++i) {
+    for (usize i = 0; i < keel::as<usize>(n); ++i) {
         TEST_CHECK(near_f64(d24_f64->samples_f64()[i], ramp[i], 1e-6));
     }
 
@@ -322,16 +322,16 @@ void test_wav_codec() {
     TEST_CHECK(d32i_re.is_ok() && ArrayRef<i32>(d32i_re->samples_i32()) == ArrayRef<i32>(d32i->samples_i32()));
 
     // 32-bit IEEE float (both via F32 source view and via float_samples=true)
-    Array<f32> ramp_f32(static_cast<usize>(n));
-    for (usize i = 0; i < static_cast<usize>(n); ++i) {
-        ramp_f32[i] = static_cast<f32>(ramp[i]);
+    Array<f32> ramp_f32(keel::as<usize>(n));
+    for (usize i = 0; i < keel::as<usize>(n); ++i) {
+        ramp_f32[i] = keel::as<f32>(ramp[i]);
     }
     auto b32f = encode_wav(AudioView::from_f32(ramp_f32, n, 1, 48000.0), AudioEncodeOptions{.bits_per_sample = 32});
     TEST_CHECK(b32f.is_ok());
     TEST_CHECK(peek_wav(*b32f)->compression_method == "IEEE Float");
     auto d32f = decode_wav(*b32f, AudioDecodeOptions{.native_sample_type = true});
     TEST_CHECK(d32f.is_ok() && d32f->sample_type == AudioSampleType::F32);
-    for (usize i = 0; i < static_cast<usize>(n); ++i) {
+    for (usize i = 0; i < keel::as<usize>(n); ++i) {
         TEST_CHECK(near_f32(d32f->samples_f32()[i], ramp_f32[i], 1e-7f));
     }
 
@@ -340,7 +340,7 @@ void test_wav_codec() {
     TEST_CHECK(b64f.is_ok());
     auto d64f = decode_wav(*b64f, AudioDecodeOptions{.native_sample_type = true});
     TEST_CHECK(d64f.is_ok() && d64f->sample_type == AudioSampleType::F64);
-    for (usize i = 0; i < static_cast<usize>(n); ++i) {
+    for (usize i = 0; i < keel::as<usize>(n); ++i) {
         TEST_CHECK(d64f->samples_f64()[i] == ramp[i]);
     }
 
@@ -379,8 +379,8 @@ void test_flac_codec() {
         const u32 total = block_sz * 2;
         Array<i16> left(total), right(total);
         for (u32 i = 0; i < total; ++i) {
-            left[i] = static_cast<i16>(static_cast<i32>(i) * 180 - 11000);
-            right[i] = static_cast<i16>(9500 - static_cast<i32>(i) * 140);
+            left[i] = keel::as<i16>(keel::as<i32>(i) * 180 - 11000);
+            right[i] = keel::as<i16>(9500 - keel::as<i32>(i) * 140);
         }
 
         FlacBitWriter bw;
@@ -426,8 +426,8 @@ void test_flac_codec() {
                                  });
         TEST_CHECK(slice.is_ok() && slice->frames == 50 && slice->total_source_frames == total);
         for (u32 i = 0; i < 50; ++i) {
-            TEST_CHECK(near_f64(slice->samples_f64()[i], static_cast<f64>(left[40 + i]) / 32768.0, 1e-9));
-            TEST_CHECK(near_f64(slice->samples_f64()[50 + i], static_cast<f64>(right[40 + i]) / 32768.0, 1e-9));
+            TEST_CHECK(near_f64(slice->samples_f64()[i], keel::as<f64>(left[40 + i]) / 32768.0, 1e-9));
+            TEST_CHECK(near_f64(slice->samples_f64()[50 + i], keel::as<f64>(right[40 + i]) / 32768.0, 1e-9));
         }
     }
 
@@ -437,7 +437,7 @@ void test_flac_codec() {
         Array<i32> left(n), right(n);
         for (u32 i = 0; i < n; ++i) {
             // Smooth quadratic + small oscillation on Left, constant wasted-bits on Right -> encode via Mid-Side
-            left[i] = static_cast<i32>(i * i * 4 - 200 + ((i & 1u) ? 3 : -3));
+            left[i] = keel::as<i32>(i * i * 4 - 200 + ((i & 1u) ? 3 : -3));
             right[i] = 512; // divisible by 2^9
         }
 
@@ -447,8 +447,8 @@ void test_flac_codec() {
 
         Array<i64> mid(n), side(n);
         for (u32 i = 0; i < n; ++i) {
-            side[i] = static_cast<i64>(left[i]) - static_cast<i64>(right[i]);
-            mid[i] = (static_cast<i64>(left[i]) + static_cast<i64>(right[i])) >> 1;
+            side[i] = keel::as<i64>(left[i]) - keel::as<i64>(right[i]);
+            mid[i] = (keel::as<i64>(left[i]) + keel::as<i64>(right[i])) >> 1;
         }
 
         // Subframe 0 (Mid): Fixed LPC order 2 (subframe_type = 0x08 | 2 = 10) with Rice k=3
@@ -485,8 +485,8 @@ void test_flac_codec() {
         auto dec = decode_flac(flac_ms, AudioDecodeOptions{.native_sample_type = true});
         TEST_CHECK(dec.is_ok() && dec->frames == n);
         for (u32 i = 0; i < n; ++i) {
-            TEST_CHECK(dec->samples_i16()[i * 2 + 0] == static_cast<i16>(left[i]));
-            TEST_CHECK(dec->samples_i16()[i * 2 + 1] == static_cast<i16>(right[i]));
+            TEST_CHECK(dec->samples_i16()[i * 2 + 0] == keel::as<i16>(left[i]));
+            TEST_CHECK(dec->samples_i16()[i * 2 + 1] == keel::as<i16>(right[i]));
         }
     }
 
@@ -499,8 +499,8 @@ void test_flac_codec() {
         // QLP coeffs: c0 = 12, c1 = -4, shift = 3 => pred = (12 * s[i-1] - 4 * s[i-2]) >> 3
         for (u32 i = 2; i < n; ++i) {
             const i64 pred = (12LL * sig[i - 1] - 4LL * sig[i - 2]) >> 3;
-            const i64 res = static_cast<i64>((i % 5u) - 2) * 16; // divisible by 16 (4 wasted bits if desired)
-            sig[i] = static_cast<i32>(pred + res);
+            const i64 res = keel::as<i64>((i % 5u) - 2) * 16; // divisible by 16 (4 wasted bits if desired)
+            sig[i] = keel::as<i32>(pred + res);
         }
 
         FlacBitWriter bw;
@@ -522,7 +522,7 @@ void test_flac_codec() {
         bw.write_bits(5u, 4); // Rice k = 5
         for (u32 i = 2; i < n; ++i) {
             const i64 pred = (12LL * sig[i - 1] - 4LL * sig[i - 2]) >> 3;
-            bw.write_rice_signed(static_cast<i64>(sig[i]) - pred, 5u);
+            bw.write_rice_signed(keel::as<i64>(sig[i]) - pred, 5u);
         }
 
         // Side = 256 (constant across all samples, with 8 wasted bits => 1 << 8 = 256 -> value = 1!)
@@ -550,11 +550,11 @@ void test_flac_codec() {
 // ============================================================================
 void append_id3v23_frame(Array<u8>& buf, const char (&id)[5], ArrayRef<u8> payload) {
     buf.append(ArrayRef<u8>(reinterpret_cast<const u8*>(id), 4));
-    const u32 sz = static_cast<u32>(payload.size());
-    buf.push_back(static_cast<u8>((sz >> 24) & 0xFFu));
-    buf.push_back(static_cast<u8>((sz >> 16) & 0xFFu));
-    buf.push_back(static_cast<u8>((sz >> 8) & 0xFFu));
-    buf.push_back(static_cast<u8>(sz & 0xFFu));
+    const u32 sz = keel::as<u32>(payload.size());
+    buf.push_back(keel::as<u8>((sz >> 24) & 0xFFu));
+    buf.push_back(keel::as<u8>((sz >> 16) & 0xFFu));
+    buf.push_back(keel::as<u8>((sz >> 8) & 0xFFu));
+    buf.push_back(keel::as<u8>(sz & 0xFFu));
     buf.push_back(0u);
     buf.push_back(0u);
     buf.append(payload);
@@ -573,11 +573,11 @@ void test_mp3_codec() {
     stream.push_back(3u); // v2.3
     stream.push_back(0u);
     stream.push_back(0u);
-    const u32 tag_sz = static_cast<u32>(id3_frames.size());
-    stream.push_back(static_cast<u8>((tag_sz >> 21) & 0x7Fu));
-    stream.push_back(static_cast<u8>((tag_sz >> 14) & 0x7Fu));
-    stream.push_back(static_cast<u8>((tag_sz >> 7) & 0x7Fu));
-    stream.push_back(static_cast<u8>(tag_sz & 0x7Fu));
+    const u32 tag_sz = keel::as<u32>(id3_frames.size());
+    stream.push_back(keel::as<u8>((tag_sz >> 21) & 0x7Fu));
+    stream.push_back(keel::as<u8>((tag_sz >> 14) & 0x7Fu));
+    stream.push_back(keel::as<u8>((tag_sz >> 7) & 0x7Fu));
+    stream.push_back(keel::as<u8>(tag_sz & 0x7Fu));
     stream.append(id3_frames);
 
     // MPEG-1 Layer III, 128 kbps, 44100 Hz, Joint Stereo => frame_size = 417 bytes, 1152 samples/frame
@@ -598,11 +598,11 @@ void test_mp3_codec() {
     xing_frame[45] = 0;
     xing_frame[46] = 0;
     xing_frame[47] = 2u; // 2 audio frames => 2304 total samples
-    const u32 total_vbr_bytes = static_cast<u32>(frame_size * 3);
-    xing_frame[48] = static_cast<u8>((total_vbr_bytes >> 24) & 0xFFu);
-    xing_frame[49] = static_cast<u8>((total_vbr_bytes >> 16) & 0xFFu);
-    xing_frame[50] = static_cast<u8>((total_vbr_bytes >> 8) & 0xFFu);
-    xing_frame[51] = static_cast<u8>(total_vbr_bytes & 0xFFu);
+    const u32 total_vbr_bytes = keel::as<u32>(frame_size * 3);
+    xing_frame[48] = keel::as<u8>((total_vbr_bytes >> 24) & 0xFFu);
+    xing_frame[49] = keel::as<u8>((total_vbr_bytes >> 16) & 0xFFu);
+    xing_frame[50] = keel::as<u8>((total_vbr_bytes >> 8) & 0xFFu);
+    xing_frame[51] = keel::as<u8>(total_vbr_bytes & 0xFFu);
     stream.append(xing_frame);
 
     // Frames 1 & 2: Non-zero audio frames
@@ -613,7 +613,7 @@ void test_mp3_codec() {
         af[2] = 0x90u;
         af[3] = 0x40u;
         for (usize b = 4; b < frame_size; ++b) {
-            af[b] = static_cast<u8>((b * 37u + static_cast<usize>(f) * 13u) & 0x77u);
+            af[b] = keel::as<u8>((b * 37u + keel::as<usize>(f) * 13u) & 0x77u);
         }
         stream.append(af);
     }
@@ -678,10 +678,10 @@ void test_mp3_codec() {
 void test_aiff_codec() {
     const u64 frames = 255; // odd frame count to test SSND & metadata word-alignment
     const f64 fs = 48000.0;
-    Array<f64> stereo(static_cast<usize>(frames * 2));
+    Array<f64> stereo(keel::as<usize>(frames * 2));
     for (u64 t = 0; t < frames; ++t) {
-        stereo[static_cast<usize>(t * 2 + 0)] = 0.7 * std::sin(2.0 * kPi * 300.0 * static_cast<f64>(t) / fs);
-        stereo[static_cast<usize>(t * 2 + 1)] = -0.4 * std::sin(2.0 * kPi * 600.0 * static_cast<f64>(t) / fs);
+        stereo[keel::as<usize>(t * 2 + 0)] = 0.7 * std::sin(2.0 * kPi * 300.0 * keel::as<f64>(t) / fs);
+        stereo[keel::as<usize>(t * 2 + 1)] = -0.4 * std::sin(2.0 * kPi * 600.0 * keel::as<f64>(t) / fs);
     }
     AudioView view = AudioView::from_f64(stereo, frames, 2, fs, AudioChannelLayout::Interleaved);
 
@@ -729,7 +729,7 @@ void test_aiff_codec() {
         if (fbps == 32) {
             TEST_CHECK(dec_f->sample_type == AudioSampleType::F32);
             for (usize i = 0; i < stereo.size(); ++i) {
-                TEST_CHECK(near_f32(dec_f->samples_f32()[i], static_cast<f32>(stereo[i]), 1e-6f));
+                TEST_CHECK(near_f32(dec_f->samples_f32()[i], keel::as<f32>(stereo[i]), 1e-6f));
             }
         } else {
             TEST_CHECK(dec_f->sample_type == AudioSampleType::F64);
@@ -767,10 +767,10 @@ void test_aiff_codec() {
 void test_au_codec() {
     const u64 frames = 200;
     const f64 fs = 16000.0;
-    Array<f64> samples(static_cast<usize>(frames * 2));
+    Array<f64> samples(keel::as<usize>(frames * 2));
     for (u64 t = 0; t < frames; ++t) {
-        samples[static_cast<usize>(0 * frames + t)] = 0.6 * std::sin(2.0 * kPi * 500.0 * static_cast<f64>(t) / fs);
-        samples[static_cast<usize>(1 * frames + t)] = -0.3 * std::cos(2.0 * kPi * 900.0 * static_cast<f64>(t) / fs);
+        samples[keel::as<usize>(0 * frames + t)] = 0.6 * std::sin(2.0 * kPi * 500.0 * keel::as<f64>(t) / fs);
+        samples[keel::as<usize>(1 * frames + t)] = -0.3 * std::cos(2.0 * kPi * 900.0 * keel::as<f64>(t) / fs);
     }
     AudioView view_planar = AudioView::from_f64(samples, frames, 2, fs, AudioChannelLayout::Planar);
 
@@ -810,7 +810,7 @@ void test_au_codec() {
         if (fbps == 32) {
             TEST_CHECK(dec_f->sample_type == AudioSampleType::F32);
             for (usize i = 0; i < samples.size(); ++i) {
-                TEST_CHECK(near_f32(dec_f->samples_f32()[i], static_cast<f32>(samples[i]), 1e-6f));
+                TEST_CHECK(near_f32(dec_f->samples_f32()[i], keel::as<f32>(samples[i]), 1e-6f));
             }
         } else {
             TEST_CHECK(dec_f->sample_type == AudioSampleType::F64);
@@ -867,8 +867,8 @@ void test_midi_codec() {
         TEST_CHECK(got.channel == notes_in[i].channel);
         TEST_CHECK(got.note_number == notes_in[i].note_number);
         TEST_CHECK(got.velocity == notes_in[i].velocity);
-        TEST_CHECK(near_f64(got.start_time_sec, 0.5 * static_cast<f64>(i), 1e-4));
-        TEST_CHECK(near_f64(got.end_time_sec, 0.5 * static_cast<f64>(i + 1), 1e-4));
+        TEST_CHECK(near_f64(got.start_time_sec, 0.5 * keel::as<f64>(i), 1e-4));
+        TEST_CHECK(near_f64(got.end_time_sec, 0.5 * keel::as<f64>(i + 1), 1e-4));
         TEST_CHECK(near_f64(got.duration_sec, 0.5, 1e-4));
     }
 
@@ -1017,7 +1017,7 @@ void test_file_io_and_robustness() {
     Array<f64> surround(100 * 6);
     for (usize ch = 0; ch < 6; ++ch) {
         for (usize t = 0; t < 100; ++t) {
-            surround[ch * 100 + t] = 0.1 * static_cast<f64>(ch + 1);
+            surround[ch * 100 + t] = 0.1 * keel::as<f64>(ch + 1);
         }
     }
     AudioView sur_view = AudioView::from_f64(surround, 100, 6, 192000.0, AudioChannelLayout::Planar);
