@@ -28,7 +28,7 @@ namespace midi_detail {
 
 [[nodiscard]] ErrorCode read_vlq(const u8* data, usize end, usize& pos, u32& out_val) noexcept {
     u32 val = 0;
-    for (int i = 0; i < 4; ++i) {
+    for (i32 i = 0; i < 4; ++i) {
         if (pos >= end) [[unlikely]] {
             return ErrorCode::EndOfFile;
         }
@@ -44,12 +44,12 @@ namespace midi_detail {
 
 template <typename ByteBuf> void write_vlq(ByteBuf& buf, u32 val) {
     u8 tmp[5];
-    int count = 0;
+    i32 count = 0;
     tmp[count++] = as<u8>(val & 0x7Fu);
     while ((val >>= 7) > 0u) {
         tmp[count++] = as<u8>((val & 0x7Fu) | 0x80u);
     }
-    for (int i = count - 1; i >= 0; --i) {
+    for (i32 i = count - 1; i >= 0; --i) {
         buf.push_back(tmp[i]);
     }
 }

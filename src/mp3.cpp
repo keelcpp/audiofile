@@ -258,7 +258,7 @@ class Mp3BitReader {
 public:
     Mp3BitReader(const u8* data, usize len) noexcept : m_data(data), m_len(len) {}
 
-    [[nodiscard]] u32 read_bits(unsigned n) noexcept {
+    [[nodiscard]] u32 read_bits(u32 n) noexcept {
         if (n == 0) return 0;
         while (m_bits_left < n) {
             if (m_pos >= m_len) {
@@ -279,7 +279,7 @@ private:
     usize m_len = 0;
     usize m_pos = 0;
     u64 m_bit_buf = 0;
-    unsigned m_bits_left = 0;
+    u32 m_bits_left = 0;
 };
 
 struct FrameHeader {
@@ -378,7 +378,7 @@ struct VbrHeaderInfo {
     return vbr;
 }
 
-[[nodiscard]] f64 dequant_power_4bit(int is) noexcept {
+[[nodiscard]] f64 dequant_power_4bit(i32 is) noexcept {
     // Exact precomputed lookup table for |is|^(4/3), is in [-8, 7]
     static constexpr f64 kPow43[9] = {
         0.0,
@@ -392,7 +392,7 @@ struct VbrHeaderInfo {
         16.0,
     };
     if (is == 0) return 0.0;
-    const int mag = (is < 0) ? -is : is;
+    const i32 mag = (is < 0) ? -is : is;
     const f64 val = (mag <= 8) ? kPow43[mag] : std::pow(as<f64>(mag), 4.0 / 3.0);
     return (is < 0) ? -val : val;
 }
@@ -510,14 +510,14 @@ Result<AudioBuffer> decode_mp3(ArrayRef<u8> bytes, const AudioDecodeOptions& opt
     }
 
     f64 cos_poly[32][64]{};
-    for (int i = 0; i < 32; ++i) {
-        for (int k = 0; k < 64; ++k) {
+    for (i32 i = 0; i < 32; ++i) {
+        for (i32 k = 0; k < 64; ++k) {
             cos_poly[i][k] = std::cos((mp3_detail::kPi / 64.0) * as<f64>(2 * i + 1) * as<f64>(k - 16));
         }
     }
 
     f64 synth_win[512]{};
-    for (int i = 0; i < 512; ++i) {
+    for (i32 i = 0; i < 512; ++i) {
         const f64 angle = (2.0 * mp3_detail::kPi * (as<f64>(i) + 0.5)) / 1024.0;
         synth_win[i] = -std::sin(angle) * std::cos(angle * 0.5);
     }
@@ -554,38 +554,38 @@ Result<AudioBuffer> decode_mp3(ArrayRef<u8> bytes, const AudioDecodeOptions& opt
             const u8* frame_data = d + pos + header_bytes;
             const usize frame_data_len = (hdr.frame_size >= header_bytes) ? (hdr.frame_size - header_bytes) : 0u;
 
-            const int num_granules = (hdr.version == 3u) ? 2 : 1;
+            const i32 num_granules = (hdr.version == 3u) ? 2 : 1;
             const u16 frame_ch = hdr.num_channels;
             mp3_detail::Mp3BitReader br(frame_data, frame_data_len);
 
-            for (int gr = 0; gr < num_granules; ++gr) {
+            for (i32 gr = 0; gr < num_granules; ++gr) {
                 const usize gr_offset = as<usize>(gr) * 576u;
                 for (u16 ch = 0; ch < frame_ch; ++ch) {
                     f64 xr[32][18]{};
-                    for (int sb = 0; sb < 32; ++sb) {
-                        for (int ss = 0; ss < 18; ++ss) {
-                            int is = as<int>(br.read_bits(4));
+                    for (i32 sb = 0; sb < 32; ++sb) {
+                        for (i32 ss = 0; ss < 18; ++ss) {
+                            i32 is = as<i32>(br.read_bits(4));
                             if (is > 7) is -= 16;
                             xr[sb][ss] = mp3_detail::dequant_power_4bit(is) * 0.05;
                         }
                     }
 
                     const u16 dst_ch = (ch < num_channels) ? ch : u16{0};
-                    for (int ss = 0; ss < 18; ++ss) {
+                    for (i32 ss = 0; ss < 18; ++ss) {
                         f64 u[64]{};
-                        for (int k = 0; k < 64; ++k) {
+                        for (i32 k = 0; k < 64; ++k) {
                             f64 acc = 0.0;
-                            for (int sb = 0; sb < 32; ++sb) {
+                            for (i32 sb = 0; sb < 32; ++sb) {
                                 acc += xr[sb][ss] * cos_poly[sb][k];
                             }
                             u[k] = acc;
                         }
 
                         const usize ss_offset = gr_offset + as<usize>(ss) * 32u;
-                        for (int j = 0; j < 32; ++j) {
+                        for (i32 j = 0; j < 32; ++j) {
                             f64 sample = 0.0;
-                            for (int k = 0; k < 16; ++k) {
-                                const int idx = k * 32 + j;
+                            for (i32 k = 0; k < 16; ++k) {
+                                const i32 idx = k * 32 + j;
                                 sample += u[idx & 63] * synth_win[idx];
                             }
                             if (sample < -1.0) sample = -1.0;

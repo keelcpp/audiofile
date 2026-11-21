@@ -20,7 +20,7 @@ public:
     [[nodiscard]] bool eof() const noexcept { return m_pos >= m_len && m_bits_left == 0; }
     [[nodiscard]] bool overrun() const noexcept { return m_overrun; }
 
-    [[nodiscard]] u32 read_bits(unsigned n) noexcept {
+    [[nodiscard]] u32 read_bits(u32 n) noexcept {
         if (n == 0) return 0;
         KEEL_ASSERT(n <= 32);
         while (m_bits_left < n) {
@@ -39,14 +39,14 @@ public:
         return as<u32>((m_bit_buf >> m_bits_left) & mask);
     }
 
-    [[nodiscard]] u64 read_bits64(unsigned n) noexcept {
+    [[nodiscard]] u64 read_bits64(u32 n) noexcept {
         if (n <= 32) return read_bits(n);
         const u64 high = read_bits(n - 32);
         const u64 low = read_bits(32);
         return (high << 32) | low;
     }
 
-    [[nodiscard]] i64 read_signed_bits(unsigned n) noexcept {
+    [[nodiscard]] i64 read_signed_bits(u32 n) noexcept {
         if (n == 0) return 0;
         const u64 u = read_bits64(n);
         if (n >= 64) return as<i64>(u);
@@ -77,7 +77,7 @@ public:
         return count;
     }
 
-    [[nodiscard]] i64 read_rice_signed(unsigned k) noexcept {
+    [[nodiscard]] i64 read_rice_signed(u32 k) noexcept {
         const u64 msbs = read_unary();
         const u64 lsbs = (k > 0) ? read_bits64(k) : 0ULL;
         const u64 uval = (msbs << k) | lsbs;
@@ -90,7 +90,7 @@ public:
     [[nodiscard]] u64 read_utf8_coded() noexcept {
         const u32 v0 = read_bits(8);
         if ((v0 & 0x80u) == 0u) return v0;
-        int cont_bytes = 0;
+        i32 cont_bytes = 0;
         u64 val = 0;
         if ((v0 & 0xE0u) == 0xC0u) {
             cont_bytes = 1;
@@ -113,7 +113,7 @@ public:
         } else {
             return 0;
         }
-        for (int i = 0; i < cont_bytes; ++i) {
+        for (i32 i = 0; i < cont_bytes; ++i) {
             val = (val << 6) | (read_bits(8) & 0x3Fu);
         }
         return val;
@@ -126,7 +126,7 @@ private:
     usize m_len = 0;
     usize m_pos = 0;
     u64 m_bit_buf = 0;
-    unsigned m_bits_left = 0;
+    u32 m_bits_left = 0;
     bool m_overrun = false;
 };
 
@@ -238,7 +238,7 @@ struct FlacStreamHeader {
     return st;
 }
 
-[[nodiscard]] ErrorCode decode_rice_residual(FlacBitReader& br, unsigned predictor_order, u32 block_size,
+[[nodiscard]] ErrorCode decode_rice_residual(FlacBitReader& br, u32 predictor_order, u32 block_size,
                                              i64* samples) noexcept {
     const u32 coding_method = br.read_bits(2);
     if (coding_method > 1u) [[unlikely]] {
@@ -254,7 +254,7 @@ struct FlacStreamHeader {
         return ErrorCode::InvalidData;
     }
 
-    const unsigned rice_param_bits = (coding_method == 0u) ? 4u : 5u;
+    const u32 rice_param_bits = (coding_method == 0u) ? 4u : 5u;
     const u32 rice_escape = (coding_method == 0u) ? 0x0Fu : 0x1Fu;
 
     for (usize p = 0; p < num_partitions; ++p) {
@@ -265,7 +265,7 @@ struct FlacStreamHeader {
             return ErrorCode::EndOfFile;
         }
         if (k == rice_escape) {
-            const unsigned escape_bits = br.read_bits(5);
+            const u32 escape_bits = br.read_bits(5);
             for (usize i = p_start; i < p_end; ++i) {
                 samples[i] = br.read_signed_bits(escape_bits);
             }
@@ -430,7 +430,7 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
                 }
             }
 
-            unsigned subframe_bps = st.bits_per_sample;
+            u32 subframe_bps = st.bits_per_sample;
             if ((chan_assign == 8u && ch == 1) || (chan_assign == 9u && ch == 0) || (chan_assign == 10u && ch == 1)) {
                 ++subframe_bps;
             }
@@ -455,11 +455,11 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
                     return ErrorCode::EndOfFile;
                 }
             } else if ((subframe_type & 0x38u) == 0x08u) {
-                const unsigned order = subframe_type & 0x07u;
+                const u32 order = subframe_type & 0x07u;
                 if (order > 4u || order > block_size) [[unlikely]] {
                     return ErrorCode::InvalidData;
                 }
-                for (unsigned i = 0; i < order; ++i) {
+                for (u32 i = 0; i < order; ++i) {
                     samples[i] = br.read_signed_bits(subframe_bps);
                 }
                 if (br.overrun()) [[unlikely]] {
@@ -483,21 +483,21 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
                     samples[i] += pred;
                 }
             } else if (subframe_type >= 0x20u) {
-                const unsigned order = (subframe_type & 0x1Fu) + 1u;
+                const u32 order = (subframe_type & 0x1Fu) + 1u;
                 if (order > block_size) [[unlikely]] {
                     return ErrorCode::InvalidData;
                 }
-                for (unsigned i = 0; i < order; ++i) {
+                for (u32 i = 0; i < order; ++i) {
                     samples[i] = br.read_signed_bits(subframe_bps);
                 }
                 const u32 qlp_prec_raw = br.read_bits(4);
                 if (qlp_prec_raw == 0x0Fu) [[unlikely]] {
                     return ErrorCode::InvalidData;
                 }
-                const unsigned qlp_precision = qlp_prec_raw + 1u;
+                const u32 qlp_precision = qlp_prec_raw + 1u;
                 const i32 qlp_shift = as<i32>(br.read_signed_bits(5));
                 i64 qlp_coeffs[32]{};
-                for (unsigned i = 0; i < order; ++i) {
+                for (u32 i = 0; i < order; ++i) {
                     qlp_coeffs[i] = br.read_signed_bits(qlp_precision);
                 }
                 if (br.overrun()) [[unlikely]] {
@@ -509,7 +509,7 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
                 }
                 for (u32 i = order; i < block_size; ++i) {
                     i64 sum = 0;
-                    for (unsigned j = 0; j < order; ++j) {
+                    for (u32 j = 0; j < order; ++j) {
                         sum += qlp_coeffs[j] * samples[i - 1u - j];
                     }
                     if (qlp_shift >= 0) {

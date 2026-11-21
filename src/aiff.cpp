@@ -45,23 +45,23 @@ struct AiffChunks {
     if (exp == 0u && mant == 0ULL) {
         return 0.0;
     }
-    const int sign = ((exp & 0x8000u) != 0u) ? -1 : 1;
+    const i32 sign = ((exp & 0x8000u) != 0u) ? -1 : 1;
     exp &= 0x7FFFu;
     if (exp == 0x7FFFu) {
         return 0.0;
     }
-    const int unbiased_exp = as<int>(exp) - 16383;
+    const i32 unbiased_exp = as<i32>(exp) - 16383;
     return as<f64>(sign) * std::ldexp(as<f64>(mant), unbiased_exp - 63);
 }
 
 template <typename ByteBuf> void write_extended80_be(ByteBuf& buf, f64 val) {
     if (!(val > 0.0) || !std::isfinite(val)) {
-        for (int i = 0; i < 10; ++i) {
+        for (i32 i = 0; i < 10; ++i) {
             buf.push_back(0u);
         }
         return;
     }
-    int exp = 0;
+    i32 exp = 0;
     const f64 mant = std::frexp(val, &exp);
     const u16 biased_exp = as<u16>(exp + 16382);
     const u64 mant_int = as<u64>(std::ldexp(mant, 64));
