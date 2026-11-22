@@ -46,7 +46,7 @@ WavChunks scan_wav_chunks(const u8* data, usize len) noexcept {
 
         usize advance = as<usize>(csize);
         if ((advance & 1u) != 0u) {
-            if (advance == ~usize{0}) break;
+            if (advance == Limits<usize>::kMax) break;
             ++advance;
         }
         if (advance > len - payload) {
@@ -383,7 +383,7 @@ Result<Array<u8>> encode_wav(const AudioView& view, const AudioEncodeOptions& op
         return ErrorCode::OutOfRange;
     }
 
-    const f64 sr_rounded = std::round(view.sample_rate);
+    const f64 sr_rounded = keel::round(view.sample_rate);
     if (!(sr_rounded >= 1.0 && sr_rounded <= as<f64>(0xFFFFFFFFu))) [[unlikely]] {
         return ErrorCode::InvalidArgument;
     }

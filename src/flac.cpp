@@ -310,7 +310,7 @@ Result<AudioInfo> peek_flac(ArrayRef<u8> bytes, Allocator* alloc) {
 }
 
 Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& opts) {
-    if (opts.end_frame != ~u64{0} && opts.end_frame < opts.start_frame) [[unlikely]] {
+    if (opts.end_frame != Limits<u64>::kMax && opts.end_frame < opts.start_frame) [[unlikely]] {
         return ErrorCode::InvalidArgument;
     }
 
@@ -587,7 +587,7 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
         if (total_expected > 0 && stream_cursor >= total_expected) {
             break;
         }
-        if (total_expected > 0 && opts.end_frame != ~u64{0} && stream_cursor >= opts.end_frame) {
+        if (total_expected > 0 && opts.end_frame != Limits<u64>::kMax && stream_cursor >= opts.end_frame) {
             stream_cursor = total_expected;
             break;
         }

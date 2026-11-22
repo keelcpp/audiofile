@@ -4,7 +4,7 @@
 #include "keel/midi.h"
 #include "keel/number.h"
 
-#include <cmath>
+#include "keel/math.h"
 
 namespace keel::audiofile::audio_detail {
 
@@ -204,11 +204,11 @@ struct FrameWindow {
 
 [[nodiscard]] inline Result<FrameWindow> compute_frame_window(u64 available_frames,
                                                               const AudioDecodeOptions& opts) noexcept {
-    if (opts.end_frame != ~u64{0} && opts.end_frame < opts.start_frame) [[unlikely]] {
+    if (opts.end_frame != Limits<u64>::kMax && opts.end_frame < opts.start_frame) [[unlikely]] {
         return ErrorCode::InvalidArgument;
     }
     const u64 s0 = keel::min(opts.start_frame, available_frames);
-    const u64 s1 = (opts.end_frame == ~u64{0}) ? available_frames : keel::min(opts.end_frame, available_frames);
+    const u64 s1 = (opts.end_frame == Limits<u64>::kMax) ? available_frames : keel::min(opts.end_frame, available_frames);
     const u64 count = (s1 > s0) ? (s1 - s0) : 0;
     if (opts.max_frames > 0 && count > opts.max_frames) [[unlikely]] {
         return ErrorCode::OutOfRange;
@@ -227,12 +227,12 @@ struct FrameWindow {
         return Array<u8>(dst_alloc);
     }
 
-    const u64 max_usize = as<u64>(~usize{0});
+    const u64 max_usize = as<u64>(Limits<usize>::kMax);
     if (frames > max_usize / as<u64>(channels)) [[unlikely]] {
         return ErrorCode::OutOfRange;
     }
     const usize sample_count = as<usize>(frames) * as<usize>(channels);
-    if (sample_count > (~usize{0}) / elem_size) [[unlikely]] {
+    if (sample_count > Limits<usize>::kMax / elem_size) [[unlikely]] {
         return ErrorCode::OutOfRange;
     }
     const usize total_bytes = sample_count * elem_size;
@@ -260,19 +260,19 @@ struct FrameWindow {
     if (view.channels == 0 || view.frames == 0) [[unlikely]] {
         return ErrorCode::InvalidArgument;
     }
-    if (!std::isfinite(view.sample_rate) || !(view.sample_rate > 0.0)) [[unlikely]] {
+    if (!keel::is_finite(view.sample_rate) || !(view.sample_rate > 0.0)) [[unlikely]] {
         return ErrorCode::InvalidArgument;
     }
     const usize elem_size = audio_sample_size(view.sample_type);
     if (elem_size == 0) [[unlikely]] {
         return ErrorCode::InvalidArgument;
     }
-    const u64 max_usize = as<u64>(~usize{0});
+    const u64 max_usize = as<u64>(Limits<usize>::kMax);
     if (view.frames > max_usize / as<u64>(view.channels)) [[unlikely]] {
         return ErrorCode::OutOfRange;
     }
     const usize total_samples = as<usize>(view.frames) * as<usize>(view.channels);
-    if (total_samples > (~usize{0}) / elem_size) [[unlikely]] {
+    if (total_samples > Limits<usize>::kMax / elem_size) [[unlikely]] {
         return ErrorCode::OutOfRange;
     }
     const usize needed_bytes = total_samples * elem_size;
@@ -340,7 +340,7 @@ struct FrameWindow {
 
 [[nodiscard]] inline f64 clamp_unit(f64 s) noexcept {
     if (!(s >= -1.0)) {
-        return std::isnan(s) ? 0.0 : -1.0;
+        return keel::is_nan(s) ? 0.0 : -1.0;
     }
     return (s > 1.0) ? 1.0 : s;
 }
@@ -354,7 +354,7 @@ struct FrameWindow {
         return as<u8>(as<i32>(v) + 128);
     }
     const f64 s = clamp_unit(view_sample_f64(view, idx));
-    return as<u8>(std::lround((s + 1.0) * 127.5));
+    return as<u8>(keel::round_i64((s + 1.0) * 127.5));
 }
 
 [[nodiscard]] inline i8 view_sample_i8_pcm(const AudioView& view, usize idx) noexcept {
@@ -365,7 +365,7 @@ struct FrameWindow {
         return as<i8>(as<i32>(view.data[idx]) - 128);
     }
     const f64 s = clamp_unit(view_sample_f64(view, idx));
-    return as<i8>(std::lround(s * 127.0));
+    return as<i8>(keel::round_i64(s * 127.0));
 }
 
 [[nodiscard]] inline i16 view_sample_i16_pcm(const AudioView& view, usize idx) noexcept {
@@ -375,12 +375,12 @@ struct FrameWindow {
         return v;
     }
     const f64 s = clamp_unit(view_sample_f64(view, idx));
-    return as<i16>(std::lround(s * 32767.0));
+    return as<i16>(keel::round_i64(s * 32767.0));
 }
 
 [[nodiscard]] inline i32 view_sample_i24_pcm(const AudioView& view, usize idx) noexcept {
     const f64 s = clamp_unit(view_sample_f64(view, idx));
-    return as<i32>(std::llround(s * 8388607.0));
+    return as<i32>(keel::round_i64(s * 8388607.0));
 }
 
 [[nodiscard]] inline i32 view_sample_i32_pcm(const AudioView& view, usize idx) noexcept {
@@ -390,7 +390,7 @@ struct FrameWindow {
         return v;
     }
     const f64 s = clamp_unit(view_sample_f64(view, idx));
-    return as<i32>(std::llround(s * 2147483647.0));
+    return as<i32>(keel::round_i64(s * 2147483647.0));
 }
 
 } // namespace keel::audiofile::audio_detail

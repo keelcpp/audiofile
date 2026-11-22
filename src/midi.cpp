@@ -395,11 +395,11 @@ Result<Array<u8>> encode_midi(ArrayRef<MidiNote> notes, const MidiEncodeOptions&
     if (opts.ticks_per_quarter_note == 0u || (opts.ticks_per_quarter_note & 0x8000u) != 0u) [[unlikely]] {
         return ErrorCode::InvalidArgument;
     }
-    if (!std::isfinite(opts.tempo_bpm) || !(opts.tempo_bpm > 0.0)) [[unlikely]] {
+    if (!keel::is_finite(opts.tempo_bpm) || !(opts.tempo_bpm > 0.0)) [[unlikely]] {
         return ErrorCode::InvalidArgument;
     }
 
-    const f64 us_raw = std::round(60000000.0 / opts.tempo_bpm);
+    const f64 us_raw = keel::round(60000000.0 / opts.tempo_bpm);
     if (!(us_raw >= 1.0 && us_raw <= 16777215.0)) [[unlikely]] {
         return ErrorCode::InvalidArgument;
     }
@@ -425,8 +425,8 @@ Result<Array<u8>> encode_midi(ArrayRef<MidiNote> notes, const MidiEncodeOptions&
         if (n.channel > 15u || n.note_number > 127u || n.velocity > 127u) [[unlikely]] {
             return ErrorCode::InvalidArgument;
         }
-        if (!std::isfinite(n.start_time_sec) || !(n.start_time_sec >= 0.0) || !std::isfinite(n.end_time_sec) ||
-            !std::isfinite(n.duration_sec)) [[unlikely]] {
+        if (!keel::is_finite(n.start_time_sec) || !(n.start_time_sec >= 0.0) || !keel::is_finite(n.end_time_sec) ||
+            !keel::is_finite(n.duration_sec)) [[unlikely]] {
             return ErrorCode::InvalidArgument;
         }
 
@@ -437,8 +437,8 @@ Result<Array<u8>> encode_midi(ArrayRef<MidiNote> notes, const MidiEncodeOptions&
             end_sec = n.start_time_sec + n.duration_sec;
         }
 
-        const u64 start_tick = as<u64>(std::llround(n.start_time_sec / seconds_per_tick));
-        u64 end_tick = as<u64>(std::llround(end_sec / seconds_per_tick));
+        const u64 start_tick = as<u64>(keel::round_i64(n.start_time_sec / seconds_per_tick));
+        u64 end_tick = as<u64>(keel::round_i64(end_sec / seconds_per_tick));
         if (end_tick <= start_tick) {
             end_tick = start_tick + 1ULL;
         }

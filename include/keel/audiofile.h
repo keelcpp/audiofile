@@ -92,7 +92,7 @@ struct AudioInfo {
 
 struct AudioDecodeOptions {
     u64 start_frame = 0;             // 0-based inclusive
-    u64 end_frame = ~u64{0};         // 0-based exclusive, ~0 = end of stream
+    u64 end_frame = Limits<u64>::kMax;         // 0-based exclusive, ~0 = end of stream
     bool native_sample_type = false; // false => normalized [-1, 1] F64; true => preserve native sample type
     AudioChannelLayout layout = AudioChannelLayout::Interleaved;
     u64 max_frames = kDefaultMaxAudioFrames;

@@ -297,7 +297,7 @@ Result<Array<u8>> encode_au(const AudioView& view, const AudioEncodeOptions& opt
         return f_ec;
     }
 
-    const f64 sr_rounded = std::round(view.sample_rate);
+    const f64 sr_rounded = keel::round(view.sample_rate);
     if (!(sr_rounded >= 1.0 && sr_rounded <= as<f64>(0xFFFFFFFFu))) [[unlikely]] {
         return ErrorCode::InvalidArgument;
     }
@@ -340,7 +340,7 @@ Result<Array<u8>> encode_au(const AudioView& view, const AudioEncodeOptions& opt
         return ErrorCode::OutOfRange;
     }
     const u64 data_size_u64 = view.frames * block_align;
-    if (data_size_u64 > as<u64>(~usize{0}) - as<u64>(header_size)) [[unlikely]] {
+    if (data_size_u64 > as<u64>(Limits<usize>::kMax) - as<u64>(header_size)) [[unlikely]] {
         return ErrorCode::OutOfRange;
     }
 

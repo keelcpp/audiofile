@@ -51,20 +51,20 @@ struct AiffChunks {
         return 0.0;
     }
     const i32 unbiased_exp = as<i32>(exp) - 16383;
-    return as<f64>(sign) * std::ldexp(as<f64>(mant), unbiased_exp - 63);
+    return as<f64>(sign) * keel::ldexp(as<f64>(mant), unbiased_exp - 63);
 }
 
 template <typename ByteBuf> void write_extended80_be(ByteBuf& buf, f64 val) {
-    if (!(val > 0.0) || !std::isfinite(val)) {
+    if (!(val > 0.0) || !keel::is_finite(val)) {
         for (i32 i = 0; i < 10; ++i) {
             buf.push_back(0u);
         }
         return;
     }
     i32 exp = 0;
-    const f64 mant = std::frexp(val, &exp);
+    const f64 mant = keel::frexp(val, &exp);
     const u16 biased_exp = as<u16>(exp + 16382);
-    const u64 mant_int = as<u64>(std::ldexp(mant, 64));
+    const u64 mant_int = as<u64>(keel::ldexp(mant, 64));
     audio_detail::write_u16_be(buf, biased_exp);
     audio_detail::write_u64_be(buf, mant_int);
 }
@@ -96,7 +96,7 @@ template <typename ByteBuf> void write_extended80_be(ByteBuf& buf, f64 val) {
 
         usize advance = as<usize>(csize);
         if ((advance & 1u) != 0u) {
-            if (advance == ~usize{0}) break;
+            if (advance == Limits<usize>::kMax) break;
             ++advance;
         }
         if (advance > len - payload) {

@@ -393,7 +393,7 @@ struct VbrHeaderInfo {
     };
     if (is == 0) return 0.0;
     const i32 mag = (is < 0) ? -is : is;
-    const f64 val = (mag <= 8) ? kPow43[mag] : std::pow(as<f64>(mag), 4.0 / 3.0);
+    const f64 val = (mag <= 8) ? kPow43[mag] : keel::pow(as<f64>(mag), 4.0 / 3.0);
     return (is < 0) ? -val : val;
 }
 
@@ -447,7 +447,7 @@ Result<AudioInfo> peek_mp3(ArrayRef<u8> bytes, Allocator* alloc) {
             const u64 stream_bytes =
                 vbr.has_bytes ? as<u64>(vbr.total_bytes) : as<u64>(id3.audio_end - pos);
             info.bit_rate_kbps =
-                as<u32>(std::lround((as<f64>(stream_bytes) * 8.0) / (info.duration_sec * 1000.0)));
+                as<u32>(keel::round_i64((as<f64>(stream_bytes) * 8.0) / (info.duration_sec * 1000.0)));
         }
     } else if (info.bit_rate_kbps > 0 && id3.audio_end > pos) {
         const usize audio_bytes = id3.audio_end - pos;
@@ -460,7 +460,7 @@ Result<AudioInfo> peek_mp3(ArrayRef<u8> bytes, Allocator* alloc) {
 }
 
 Result<AudioBuffer> decode_mp3(ArrayRef<u8> bytes, const AudioDecodeOptions& opts) {
-    if (opts.end_frame != ~u64{0} && opts.end_frame < opts.start_frame) [[unlikely]] {
+    if (opts.end_frame != Limits<u64>::kMax && opts.end_frame < opts.start_frame) [[unlikely]] {
         return ErrorCode::InvalidArgument;
     }
     if (bytes.size() < 4) [[unlikely]] {
@@ -512,14 +512,14 @@ Result<AudioBuffer> decode_mp3(ArrayRef<u8> bytes, const AudioDecodeOptions& opt
     f64 cos_poly[32][64]{};
     for (i32 i = 0; i < 32; ++i) {
         for (i32 k = 0; k < 64; ++k) {
-            cos_poly[i][k] = std::cos((mp3_detail::kPi / 64.0) * as<f64>(2 * i + 1) * as<f64>(k - 16));
+            cos_poly[i][k] = keel::cos((mp3_detail::kPi / 64.0) * as<f64>(2 * i + 1) * as<f64>(k - 16));
         }
     }
 
     f64 synth_win[512]{};
     for (i32 i = 0; i < 512; ++i) {
         const f64 angle = (2.0 * mp3_detail::kPi * (as<f64>(i) + 0.5)) / 1024.0;
-        synth_win[i] = -std::sin(angle) * std::cos(angle * 0.5);
+        synth_win[i] = -keel::sin(angle) * keel::cos(angle * 0.5);
     }
 
     u64 stream_cursor = 0;
@@ -651,7 +651,7 @@ Result<AudioBuffer> decode_mp3(ArrayRef<u8> bytes, const AudioDecodeOptions& opt
             for (u64 t = 0; t < out_frames; ++t) {
                 const f64 s = audio_detail::clamp_unit(src[as<usize>(t)]);
                 dst[audio_detail::sample_index(t, ch, out_frames, num_channels, opts.layout)] =
-                    as<i16>(std::lround(s * 32767.0));
+                    as<i16>(keel::round_i64(s * 32767.0));
             }
         }
     }
