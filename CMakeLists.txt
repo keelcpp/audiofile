@@ -115,6 +115,14 @@ if(KEEL_AUDIOFILE_BUILD_TESTS)
     else()
         target_compile_options(test_audiofile PRIVATE -Wall -Wextra -Wpedantic)
     endif()
+    if(COMMAND keel_enforce_guidelines)
+        keel_enforce_guidelines(test_audiofile
+            SCOPE ALL
+            BAN_RAW_INTS ALL
+            BAN_RAW_FLOATS ALL
+            WARNINGS OFF
+        )
+    endif()
     add_test(NAME test_audiofile COMMAND test_audiofile)
 
     get_target_property(KEEL_CORE_INC_DIRS keel::keel INTERFACE_INCLUDE_DIRECTORIES)

@@ -2,40 +2,37 @@
 #include "keel/midi.h"
 
 #include "keel/arena.h"
+#include "keel/format.h"
 #include "keel/fs.h"
-
-#include <cmath>
-#include <cstdio>
-#include <cstring>
+#include "keel/math.h"
+#include "keel/memory.h"
 
 using namespace keel;
 using namespace keel::audiofile;
 
 namespace {
 
-int g_tests_passed = 0;
-int g_tests_failed = 0;
+i32 g_tests_passed = 0;
+i32 g_tests_failed = 0;
 
 #define TEST_CHECK(cond)                                                                                               \
     do {                                                                                                               \
         if (!(cond)) {                                                                                                 \
-            std::fprintf(stderr, "FAIL: %s (%s:%d)\n", #cond, __FILE__, __LINE__);                                     \
+            keel::eprintln("FAIL: {} ({}:{})", #cond, __FILE__, __LINE__);                                             \
             ++g_tests_failed;                                                                                          \
         } else {                                                                                                       \
             ++g_tests_passed;                                                                                          \
         }                                                                                                              \
     } while (0)
 
-[[nodiscard]] bool near_f64(f64 a, f64 b, f64 tol) noexcept { return std::fabs(a - b) <= tol; }
-[[nodiscard]] bool near_f32(f32 a, f32 b, f32 tol) noexcept { return std::fabs(a - b) <= tol; }
-
-constexpr f64 kPi = 3.14159265358979323846;
+[[nodiscard]] bool near_f64(f64 a, f64 b, f64 tol) noexcept { return keel::abs(a - b) <= tol; }
+[[nodiscard]] bool near_f32(f32 a, f32 b, f32 tol) noexcept { return keel::abs(a - b) <= tol; }
 
 // Helper MSB-first bitstream writer for constructing valid synthetic FLAC frames
 class FlacBitWriter {
 public:
-    void write_bits(u64 val, unsigned n) {
-        for (int i = keel::as<int>(n) - 1; i >= 0; --i) {
+    void write_bits(u64 val, u32 n) {
+        for (i32 i = keel::as<i32>(n) - 1; i >= 0; --i) {
             m_bit_buf = keel::as<u8>((m_bit_buf << 1) | keel::as<u8>((val >> i) & 1ULL));
             if (++m_bit_count == 8u) {
                 m_data.push_back(m_bit_buf);
@@ -45,8 +42,8 @@ public:
         }
     }
 
-    void write_signed_bits(i64 val, unsigned n) {
-        const u64 mask = (n >= 64u) ? ~u64{0} : ((u64{1} << n) - 1ULL);
+    void write_signed_bits(i64 val, u32 n) {
+        const u64 mask = (n >= 64u) ? Limits<u64>::kMax : ((u64{1} << n) - 1ULL);
         write_bits(keel::as<u64>(val) & mask, n);
     }
 
@@ -57,7 +54,7 @@ public:
         write_bits(1, 1);
     }
 
-    void write_rice_signed(i64 val, unsigned k) {
+    void write_rice_signed(i64 val, u32 k) {
         const u64 uval =
             (val >= 0) ? (keel::as<u64>(val) << 1) : ((keel::as<u64>(-val - 1) << 1) | 1ULL);
         const u32 msbs = keel::as<u32>(uval >> k);
@@ -107,7 +104,7 @@ public:
 private:
     Array<u8> m_data;
     u8 m_bit_buf = 0;
-    unsigned m_bit_count = 0;
+    u32 m_bit_count = 0;
 };
 
 void write_flac_stream_header(FlacBitWriter& bw, u32 block_size, u32 sample_rate, u32 channels, u32 bps,
@@ -125,7 +122,7 @@ void write_flac_stream_header(FlacBitWriter& bw, u32 block_size, u32 sample_rate
     bw.write_bits(channels - 1u, 3);
     bw.write_bits(bps - 1u, 5);
     bw.write_bits(total_frames, 36);
-    for (int i = 0; i < 16; ++i) {
+    for (i32 i = 0; i < 16; ++i) {
         bw.write_bits(0, 8);
     }
 
@@ -134,10 +131,10 @@ void write_flac_stream_header(FlacBitWriter& bw, u32 block_size, u32 sample_rate
         const char* c0 = "TITLE=Lossless Track";
         const char* c1 = "ARTIST=Keel Audio";
         const char* c2 = "COMMENT=Synthetic FLAC";
-        const u32 vlen = keel::as<u32>(std::strlen(vendor));
-        const u32 l0 = keel::as<u32>(std::strlen(c0));
-        const u32 l1 = keel::as<u32>(std::strlen(c1));
-        const u32 l2 = keel::as<u32>(std::strlen(c2));
+        const u32 vlen = keel::as<u32>(StringRef(vendor).size());
+        const u32 l0 = keel::as<u32>(StringRef(c0).size());
+        const u32 l1 = keel::as<u32>(StringRef(c1).size());
+        const u32 l2 = keel::as<u32>(StringRef(c2).size());
         const u32 payload_len = 4u + vlen + 4u + (4u + l0) + (4u + l1) + (4u + l2);
 
         bw.write_bits(0x84u, 8); // is_last = 1, block_type = 4 (VORBIS_COMMENT)
@@ -225,8 +222,8 @@ void test_wav_codec() {
     // Planar stereo F64 input -> encode_wav -> peek_wav -> decode_wav (Interleaved & Planar)
     Array<f64> planar_in(keel::as<usize>(frames * 2));
     for (u64 t = 0; t < frames; ++t) {
-        planar_in[keel::as<usize>(0 * frames + t)] = 0.8 * std::sin(2.0 * kPi * 440.0 * keel::as<f64>(t) / fs);
-        planar_in[keel::as<usize>(1 * frames + t)] = -0.5 * std::cos(2.0 * kPi * 880.0 * keel::as<f64>(t) / fs);
+        planar_in[keel::as<usize>(0 * frames + t)] = 0.8 * keel::sin(2.0 * kPi * 440.0 * keel::as<f64>(t) / fs);
+        planar_in[keel::as<usize>(1 * frames + t)] = -0.5 * keel::cos(2.0 * kPi * 880.0 * keel::as<f64>(t) / fs);
     }
 
     AudioView view_planar = AudioView::from_f64(planar_in, frames, 2, fs, AudioChannelLayout::Planar);
@@ -387,7 +384,7 @@ void test_flac_codec() {
         write_flac_stream_header(bw, block_sz, 44100, 2, 16, total, true);
         for (u32 f = 0; f < 2; ++f) {
             write_flac_frame_header(bw, f, block_sz, 1u); // Independent L/R
-            for (int ch = 0; ch < 2; ++ch) {
+            for (i32 ch = 0; ch < 2; ++ch) {
                 bw.write_bits(0, 1);  // zero pad
                 bw.write_bits(1u, 6); // Verbatim
                 bw.write_bits(0, 1);  // no wasted bits
@@ -589,7 +586,7 @@ void test_mp3_codec() {
     xing_frame[1] = 0xFBu;
     xing_frame[2] = 0x90u;
     xing_frame[3] = 0x40u;
-    std::memcpy(xing_frame.data() + 36, "Xing", 4);
+    keel::mem_copy(xing_frame.data() + 36, "Xing", 4);
     xing_frame[40] = 0;
     xing_frame[41] = 0;
     xing_frame[42] = 0;
@@ -606,7 +603,7 @@ void test_mp3_codec() {
     stream.append(xing_frame);
 
     // Frames 1 & 2: Non-zero audio frames
-    for (int f = 0; f < 2; ++f) {
+    for (i32 f = 0; f < 2; ++f) {
         Array<u8> af(frame_size, u8{0});
         af[0] = 0xFFu;
         af[1] = 0xFBu;
@@ -620,9 +617,9 @@ void test_mp3_codec() {
 
     // Trailing 128-byte ID3v1 tag (supplies fallback artist while preserving ID3v2 title/comment!)
     Array<u8> id3v1(128, u8{0});
-    std::memcpy(id3v1.data(), "TAG", 3);
-    std::memcpy(id3v1.data() + 3, "Ignored V1 Title", 16);
-    std::memcpy(id3v1.data() + 33, "Fallback V1 Artist", 18);
+    keel::mem_copy(id3v1.data(), "TAG", 3);
+    keel::mem_copy(id3v1.data() + 3, "Ignored V1 Title", 16);
+    keel::mem_copy(id3v1.data() + 33, "Fallback V1 Artist", 18);
     stream.append(id3v1);
 
     auto info = peek_audio(stream);
@@ -643,7 +640,7 @@ void test_mp3_codec() {
     for (usize i = 0; i < dec_full->sample_count(); ++i) {
         const f64 v = dec_full->samples_f64()[i];
         TEST_CHECK(v >= -1.0 && v <= 1.0);
-        if (std::fabs(v) > 1e-4) has_nonzero = true;
+        if (keel::abs(v) > 1e-4) has_nonzero = true;
     }
     TEST_CHECK(has_nonzero);
 
@@ -680,8 +677,8 @@ void test_aiff_codec() {
     const f64 fs = 48000.0;
     Array<f64> stereo(keel::as<usize>(frames * 2));
     for (u64 t = 0; t < frames; ++t) {
-        stereo[keel::as<usize>(t * 2 + 0)] = 0.7 * std::sin(2.0 * kPi * 300.0 * keel::as<f64>(t) / fs);
-        stereo[keel::as<usize>(t * 2 + 1)] = -0.4 * std::sin(2.0 * kPi * 600.0 * keel::as<f64>(t) / fs);
+        stereo[keel::as<usize>(t * 2 + 0)] = 0.7 * keel::sin(2.0 * kPi * 300.0 * keel::as<f64>(t) / fs);
+        stereo[keel::as<usize>(t * 2 + 1)] = -0.4 * keel::sin(2.0 * kPi * 600.0 * keel::as<f64>(t) / fs);
     }
     AudioView view = AudioView::from_f64(stereo, frames, 2, fs, AudioChannelLayout::Interleaved);
 
@@ -754,11 +751,11 @@ void test_aiff_codec() {
                d_ulaw->samples_i16()[2] < -30000);
 
     Array<u8> aifc_alaw = Array<u8>::from(aifc_ulaw);
-    std::memcpy(aifc_alaw.data() + 38, "alaw", 4);
+    keel::mem_copy(aifc_alaw.data() + 38, "alaw", 4);
     aifc_alaw[58] = 0xD5u; // A-law near-zero positive
     auto d_alaw = decode_aiff(aifc_alaw, AudioDecodeOptions{.native_sample_type = true});
     TEST_CHECK(d_alaw.is_ok() && d_alaw->sample_type == AudioSampleType::I16);
-    TEST_CHECK(std::abs(d_alaw->samples_i16()[0]) <= 16);
+    TEST_CHECK(keel::abs(d_alaw->samples_i16()[0]) <= 16);
 }
 
 // ============================================================================
@@ -769,8 +766,8 @@ void test_au_codec() {
     const f64 fs = 16000.0;
     Array<f64> samples(keel::as<usize>(frames * 2));
     for (u64 t = 0; t < frames; ++t) {
-        samples[keel::as<usize>(0 * frames + t)] = 0.6 * std::sin(2.0 * kPi * 500.0 * keel::as<f64>(t) / fs);
-        samples[keel::as<usize>(1 * frames + t)] = -0.3 * std::cos(2.0 * kPi * 900.0 * keel::as<f64>(t) / fs);
+        samples[keel::as<usize>(0 * frames + t)] = 0.6 * keel::sin(2.0 * kPi * 500.0 * keel::as<f64>(t) / fs);
+        samples[keel::as<usize>(1 * frames + t)] = -0.3 * keel::cos(2.0 * kPi * 900.0 * keel::as<f64>(t) / fs);
     }
     AudioView view_planar = AudioView::from_f64(samples, frames, 2, fs, AudioChannelLayout::Planar);
 
@@ -833,7 +830,7 @@ void test_au_codec() {
     au_alaw[15] = 27u;
     au_alaw[24] = 0xD5u;
     auto d_al = decode_au(au_alaw, AudioDecodeOptions{.native_sample_type = true});
-    TEST_CHECK(d_al.is_ok() && std::abs(d_al->samples_i16()[0]) <= 16);
+    TEST_CHECK(d_al.is_ok() && keel::abs(d_al->samples_i16()[0]) <= 16);
 }
 
 // ============================================================================
@@ -926,10 +923,13 @@ void test_file_io_and_robustness() {
     const f64 pcm_vals[] = {0.25, -0.25, 0.5, -0.5, 0.75, -0.75};
     AudioView v = AudioView::from_f64(pcm_vals, 3, 2, 44100.0);
 
-    const char* wav_path = "/tmp/keel_audiofile_test_io.wav";
-    const char* aiff_path = "/tmp/keel_audiofile_test_io.aiff";
-    const char* au_path = "/tmp/keel_audiofile_test_io.au";
-    const char* mid_path = "/tmp/keel_audiofile_test_io.mid";
+    auto tmp_dir_res = fs_temp_dir();
+    TEST_CHECK(tmp_dir_res.is_ok());
+    const StringRef tmp_dir = tmp_dir_res.is_ok() ? StringRef(*tmp_dir_res) : StringRef(".");
+    const String wav_path = path_join(tmp_dir, "keel_audiofile_test_io.wav");
+    const String aiff_path = path_join(tmp_dir, "keel_audiofile_test_io.aiff");
+    const String au_path = path_join(tmp_dir, "keel_audiofile_test_io.au");
+    const String mid_path = path_join(tmp_dir, "keel_audiofile_test_io.mid");
 
     TEST_CHECK(write_audio(wav_path, v, AudioEncodeOptions{.bits_per_sample = 24, .title = "FileWav"}).is_ok());
     TEST_CHECK(write_audio(aiff_path, v, AudioEncodeOptions{.bits_per_sample = 24, .title = "FileAiff"}).is_ok());
@@ -1066,9 +1066,9 @@ int main() {
     test_file_io_and_robustness();
 
     if (g_tests_failed != 0) {
-        std::fprintf(stderr, "%d test check(s) FAILED (%d passed)\n", g_tests_failed, g_tests_passed);
+        keel::eprintln("{} test check(s) FAILED ({} passed)", g_tests_failed, g_tests_passed);
         return 1;
     }
-    std::printf("All %d keel::audiofile test checks passed.\n", g_tests_passed);
+    keel::println("All {} keel::audiofile test checks passed.", g_tests_passed);
     return 0;
 }
