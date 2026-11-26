@@ -215,6 +215,16 @@ def verify_flac_ffmpeg(exe: Path, ffmpeg: str, tmp: Path, stats: list):
             _, got_i16 = run_keel_decode(exe, p_flac, raw, native=True)
             assert_exact(f"ffmpeg->keel:{name}_native_i16", got_i16, arr_in, stats)
 
+    # Verify RFC 9639 CRC-8/CRC-16 bit-flip corruption rejection on a real FFmpeg-encoded FLAC!
+    p_corrupt = tmp / "flac_corrupt_crc.flac"
+    orig_flac = bytearray((tmp / "flac_stereo16_l5.flac").read_bytes())
+    orig_flac[-1] ^= 0x01  # flip LSB of last frame's CRC-16 footer
+    p_corrupt.write_bytes(bytes(orig_flac))
+    proc = subprocess.run([str(exe), "--decode", str(p_corrupt), str(raw), "0", "0", "end"],
+                          capture_output=True, text=True, check=False)
+    assert proc.returncode != 0, "Expected keel::decode_flac to reject CRC-16 corrupted frame!"
+    stats.append("ffmpeg->keel:flac_crc16_corrupt_rejected")
+
 
 def verify_mp3_ffmpeg(exe: Path, ffmpeg: str, tmp: Path, stats: list):
     raw = tmp / "mp3_dec.raw"
@@ -268,7 +278,9 @@ def verify_mp3_ffmpeg(exe: Path, ffmpeg: str, tmp: Path, stats: list):
             raise AssertionError(f"[ffmpeg->keel:{name}] MP3 mismatch vs FFmpeg: rmse={rmse:.6g}, max={mx:.6g}, corr={corr:.8f}")
         stats.append(f"ffmpeg->keel:{name} (rmse={rmse:.2e})")
 
-    # Also test a VBR MP3 WITH Xing header + exact frame-slice consistency!
+    # Also test a VBR MP3 WITH Xing/LAME gapless header:
+    # 1. Exact sample length & 0-sample phase match directly against FFmpeg mp3float!
+    # 2. Exact frame-slice consistency!
     sig_vbr = make_test_signal(44100, 44100, 2, transient=True)
     p_wav_vbr = tmp / "vbr_xing_in.wav"
     wavfile.write(str(p_wav_vbr), 44100, (sig_vbr * 32767.0).round().astype(np.int16))
@@ -277,9 +289,48 @@ def verify_mp3_ffmpeg(exe: Path, ffmpeg: str, tmp: Path, stats: list):
         [ffmpeg, "-y", "-i", str(p_wav_vbr), "-c:a", "libmp3lame", "-q:a", "3", "-write_xing", "1", str(p_mp3_xing)],
         check=True, capture_output=True
     )
+    ref_vbr = ffmpeg_decode_f64(ffmpeg, p_mp3_xing, 2, tmp)
     _, full_vbr = run_keel_decode(exe, p_mp3_xing, raw, native=False)
+    assert full_vbr.shape == ref_vbr.shape, (
+        f"[mp3_vbr_xing_gapless] length mismatch: keel={full_vbr.shape} vs ffmpeg={ref_vbr.shape}"
+    )
+    diff_vbr = np.abs(full_vbr - ref_vbr)
+    rmse_vbr = float(np.sqrt(np.mean(diff_vbr * diff_vbr)))
+    corr_vbr = float(np.corrcoef(full_vbr.ravel(), ref_vbr.ravel())[0, 1])
+    if rmse_vbr > 1.5e-4 or corr_vbr < 0.99999:
+        raise AssertionError(
+            f"[ffmpeg->keel:mp3_vbr_xing_gapless] mismatch: rmse={rmse_vbr:.6g}, corr={corr_vbr:.8f}"
+        )
+    stats.append(f"ffmpeg->keel:mp3_vbr_xing_gapless (len={full_vbr.shape[0]}, rmse={rmse_vbr:.2e})")
+
     _, slice_vbr = run_keel_decode(exe, p_mp3_xing, raw, native=False, start=2500, end=5200)
     assert_exact("keel:mp3_vbr_xing_slice_exact", slice_vbr, full_vbr[2500:5200], stats)
+
+    # MPEG-1 Layer II (.mp2) stereo & mono decoded by keel::decode_mp3 vs FFmpeg mp2float!
+    for name, sr, ch, br in [
+        ("mp2_m1_44k_stereo_192k", 44100, 2, "192k"),
+        ("mp2_m1_48k_mono_128k", 48000, 1, "128k"),
+    ]:
+        sig_mp2 = make_test_signal(sr, sr, ch, transient=True)
+        p_wav_mp2 = tmp / f"{name}_in.wav"
+        wavfile.write(str(p_wav_mp2), sr, (sig_mp2 * 32767.0).round().astype(np.int16))
+        p_mp2 = tmp / f"{name}.mp2"
+        subprocess.run(
+            [ffmpeg, "-y", "-i", str(p_wav_mp2), "-c:a", "mp2", "-b:a", br, str(p_mp2)],
+            check=True, capture_output=True
+        )
+        ref_mp2 = ffmpeg_decode_f64(ffmpeg, p_mp2, ch, tmp)
+        meta_mp2, got_mp2 = run_keel_decode(exe, p_mp2, raw, native=False)
+        assert meta_mp2["channels"] == ch and int(round(meta_mp2["sample_rate"])) == sr
+        n_mp2 = min(ref_mp2.shape[0], got_mp2.shape[0])
+        diff_mp2 = np.abs(got_mp2[:n_mp2] - ref_mp2[:n_mp2])
+        rmse_mp2 = float(np.sqrt(np.mean(diff_mp2 * diff_mp2)))
+        corr_mp2 = float(np.corrcoef(got_mp2[:n_mp2].ravel(), ref_mp2[:n_mp2].ravel())[0, 1])
+        if rmse_mp2 > 1.5e-4 or corr_mp2 < 0.99999:
+            raise AssertionError(
+                f"[ffmpeg->keel:{name}] MP2 mismatch vs FFmpeg: rmse={rmse_mp2:.6g}, corr={corr_mp2:.8f}"
+            )
+        stats.append(f"ffmpeg->keel:{name} (rmse={rmse_mp2:.2e})")
 
 
 def verify_aiff_au_ffmpeg(exe: Path, ffmpeg: str, tmp: Path, stats: list):
@@ -447,6 +498,23 @@ def verify_midi_independent(exe: Path, tmp: Path, stats: list):
     assert n0["note"] == 60 and n0["vel"] == 105
     assert abs(n0["start"] - 0.5) < 1e-6 and abs(n0["end"] - 2.0) < 1e-6 and abs(n0["dur"] - 1.5) < 1e-6
     stats.append("py_smf->keel:format1_tempo_change_sysex")
+
+    # 3. SMPTE 25fps x 40 sub-ticks (1000 ticks/sec) + dangling Note-On closed at End of Track -> keel
+    t_smpte = (
+        vlq(0) + bytes([0x90, 62, 100]) +
+        vlq(250) + bytes([0x80, 62, 0]) +
+        vlq(0) + bytes([0x90, 67, 88]) +
+        vlq(750) + b"\xFF\x2F\x00"
+    )
+    smf_smpte = b"MThd" + struct.pack(">IHHbB", 6, 0, 1, -25, 40) + b"MTrk" + struct.pack(">I", len(t_smpte)) + t_smpte
+    p_smpte = tmp / "py_smpte.mid"
+    p_smpte.write_bytes(smf_smpte)
+    proc_s = subprocess.run([str(exe), "--decode-midi", str(p_smpte)], check=True, capture_output=True, text=True)
+    info_s = json.loads(proc_s.stdout.strip())
+    assert len(info_s["notes"]) == 2
+    assert abs(info_s["notes"][0]["end"] - 0.25) < 1e-6
+    assert info_s["notes"][1]["note"] == 67 and abs(info_s["notes"][1]["start"] - 0.25) < 1e-6 and abs(info_s["notes"][1]["end"] - 1.0) < 1e-6
+    stats.append("py_smf->keel:smpte25_and_eot_note_close")
 
 
 def verify_matlab(exe: Path, ffmpeg: str, tmp: Path, stats: list):

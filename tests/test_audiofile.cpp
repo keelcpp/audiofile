@@ -96,6 +96,32 @@ public:
         }
     }
 
+    [[nodiscard]] usize byte_offset() const noexcept { return m_data.size(); }
+
+    void write_crc8_from(usize start_byte) {
+        align_to_byte();
+        u8 crc = 0;
+        for (usize i = start_byte; i < m_data.size(); ++i) {
+            crc = keel::as<u8>(crc ^ m_data[i]);
+            for (i32 b = 0; b < 8; ++b) {
+                crc = ((crc & 0x80u) != 0u) ? keel::as<u8>((crc << 1) ^ 0x07u) : keel::as<u8>(crc << 1);
+            }
+        }
+        write_bits(crc, 8);
+    }
+
+    void write_crc16_from(usize start_byte) {
+        align_to_byte();
+        u16 crc = 0;
+        for (usize i = start_byte; i < m_data.size(); ++i) {
+            crc = keel::as<u16>(crc ^ (keel::as<u16>(m_data[i]) << 8));
+            for (i32 b = 0; b < 8; ++b) {
+                crc = ((crc & 0x8000u) != 0u) ? keel::as<u16>((crc << 1) ^ 0x8005u) : keel::as<u16>(crc << 1);
+            }
+        }
+        write_bits(crc, 16);
+    }
+
     [[nodiscard]] Array<u8> finish() {
         align_to_byte();
         return keel::move(m_data);
@@ -151,7 +177,9 @@ void write_flac_stream_header(FlacBitWriter& bw, u32 block_size, u32 sample_rate
     }
 }
 
-void write_flac_frame_header(FlacBitWriter& bw, u32 frame_idx, u32 block_size, u32 chan_assign) {
+usize write_flac_frame_header(FlacBitWriter& bw, u32 frame_idx, u32 block_size, u32 chan_assign) {
+    bw.align_to_byte();
+    const usize frame_start = bw.byte_offset();
     bw.write_bits(0x3FFEu, 14);
     bw.write_bits(0, 1);           // reserved
     bw.write_bits(0, 1);           // fixed block size
@@ -162,7 +190,8 @@ void write_flac_frame_header(FlacBitWriter& bw, u32 frame_idx, u32 block_size, u
     bw.write_bits(0, 1);           // reserved
     bw.write_utf8_u32(frame_idx);
     bw.write_bits(block_size - 1u, 16);
-    bw.write_bits(0, 8); // CRC-8
+    bw.write_crc8_from(frame_start);
+    return frame_start;
 }
 
 // ============================================================================
@@ -383,7 +412,7 @@ void test_flac_codec() {
         FlacBitWriter bw;
         write_flac_stream_header(bw, block_sz, 44100, 2, 16, total, true);
         for (u32 f = 0; f < 2; ++f) {
-            write_flac_frame_header(bw, f, block_sz, 1u); // Independent L/R
+            const usize fstart = write_flac_frame_header(bw, f, block_sz, 1u); // Independent L/R
             for (i32 ch = 0; ch < 2; ++ch) {
                 bw.write_bits(0, 1);  // zero pad
                 bw.write_bits(1u, 6); // Verbatim
@@ -393,8 +422,7 @@ void test_flac_codec() {
                     bw.write_signed_bits(src[f * block_sz + i], 16);
                 }
             }
-            bw.align_to_byte();
-            bw.write_bits(0, 16); // CRC-16
+            bw.write_crc16_from(fstart);
         }
         Array<u8> flac_bytes = bw.finish();
 
@@ -440,7 +468,7 @@ void test_flac_codec() {
 
         FlacBitWriter bw;
         write_flac_stream_header(bw, n, 48000, 2, 16, n, false);
-        write_flac_frame_header(bw, 0, n, 10u); // Mid-Side stereo: ch0 = Mid (16-bit), ch1 = Side (17-bit)
+        const usize fstart = write_flac_frame_header(bw, 0, n, 10u); // Mid-Side stereo: ch0 = Mid (16-bit), ch1 = Side (17-bit)
 
         Array<i64> mid(n), side(n);
         for (u32 i = 0; i < n; ++i) {
@@ -475,8 +503,7 @@ void test_flac_codec() {
             bw.write_signed_bits(side[i] - side[i - 1], 12u);
         }
 
-        bw.align_to_byte();
-        bw.write_bits(0, 16);
+        bw.write_crc16_from(fstart);
         Array<u8> flac_ms = bw.finish();
 
         auto dec = decode_flac(flac_ms, AudioDecodeOptions{.native_sample_type = true});
@@ -502,7 +529,8 @@ void test_flac_codec() {
 
         FlacBitWriter bw;
         write_flac_stream_header(bw, n, 96000, 2, 24, n, false);
-        write_flac_frame_header(bw, 0, n, 8u); // Left-Side stereo: ch0 = Left (24-bit), ch1 = Side = L - R (25-bit)
+        const usize fstart =
+            write_flac_frame_header(bw, 0, n, 8u); // Left-Side stereo: ch0 = Left (24-bit), ch1 = Side = L - R (25-bit)
 
         // Left: Adaptive FIR LPC order 2 (subframe_type = 0x20 | 1)
         bw.write_bits(0, 1);
@@ -529,8 +557,7 @@ void test_flac_codec() {
         bw.write_unary(7u);   // wasted_bits = 7 + 1 = 8
         bw.write_signed_bits(1, 25u - 8u);
 
-        bw.align_to_byte();
-        bw.write_bits(0, 16);
+        bw.write_crc16_from(fstart);
         Array<u8> flac_lpc = bw.finish();
 
         auto dec = decode_flac(flac_lpc, AudioDecodeOptions{.native_sample_type = true});
@@ -539,6 +566,15 @@ void test_flac_codec() {
             TEST_CHECK(dec->samples_i32()[i * 2 + 0] == sig[i]);
             TEST_CHECK(dec->samples_i32()[i * 2 + 1] == sig[i] - 256);
         }
+
+        // (D) RFC 9639 CRC-8 & CRC-16 corruption detection: 1-bit flip in header or footer must be rejected!
+        Array<u8> bad_crc8 = flac_lpc.clone();
+        bad_crc8[fstart + 7u] ^= 0x01u; // flip bit in header CRC-8 byte
+        TEST_CHECK(decode_flac(bad_crc8).is_err());
+
+        Array<u8> bad_crc16 = flac_lpc.clone();
+        bad_crc16[bad_crc16.size() - 1u] ^= 0x01u; // flip bit in frame CRC-16 footer
+        TEST_CHECK(decode_flac(bad_crc16).is_err());
     }
 }
 
@@ -1227,6 +1263,88 @@ i32 cli_decode_midi(StringRef in_path) {
     return 0;
 }
 
+void test_spec_completeness() {
+    // 1. MIDI SMPTE timecode division (25fps x 40 ticks/frame = 1000 ticks/sec, and 29.97fps x 100) + EOT dangling Note-On
+    {
+        // 25 fps => high byte = -25 (0xE7), sub_ticks = 40 (0x28) => 1000 ticks/sec
+        const u8 smpte25_mid[] = {
+            'M',  'T',  'h',  'd',  0,    0,    0,    6,    0,    0,    0,    1,    0xE7u, 0x28u,
+            'M',  'T',  'r',  'k',  0,    0,    0,    18,
+            0x00u, 0x90u, 60u, 100u,             // tick 0 (0.0s): Note 60 ON
+            0x83u, 0x74u, 0x80u, 60u, 0u,        // +500 ticks (VLQ 500 = 0x83 0x74) -> 0.5s: Note 60 OFF
+            0x00u, 0x90u, 64u, 90u,              // tick 500 (0.5s): Note 64 ON (intentionally unclosed!)
+            0x87u, 0x68u, 0xFFu, 0x2Fu, 0x00u,   // +1000 ticks (VLQ 1000 = 0x87 0x68) -> 1.5s: End of Track!
+        };
+        auto info = peek_midi(smpte25_mid);
+        TEST_CHECK(info.is_ok() && near_f64(info->duration_sec, 1.5, 1e-9) && info->total_notes == 2u);
+
+        auto notes = decode_midi(smpte25_mid);
+        TEST_CHECK(notes.is_ok() && notes->size() == 2u);
+        if (notes && notes->size() == 2u) {
+            TEST_CHECK((*notes)[0].note_number == 60u && near_f64((*notes)[0].start_time_sec, 0.0, 1e-9) &&
+                       near_f64((*notes)[0].end_time_sec, 0.5, 1e-9));
+            TEST_CHECK((*notes)[1].note_number == 64u && near_f64((*notes)[1].start_time_sec, 0.5, 1e-9) &&
+                       near_f64((*notes)[1].end_time_sec, 1.5, 1e-9) && near_f64((*notes)[1].duration_sec, 1.0, 1e-9));
+        }
+
+        // 29.97 fps => high byte = -29 (0xE3), sub_ticks = 100 (0x64) => 2997 ticks/sec
+        const u8 smpte2997_mid[] = {
+            'M',  'T',  'h',  'd',  0,    0,    0,    6,    0,    0,    0,    1,    0xE3u, 0x64u,
+            'M',  'T',  'r',  'k',  0,    0,    0,    9,
+            0x00u, 0x90u, 69u, 80u,
+            0x97u, 0x35u, 0xFFu, 0x2Fu, 0x00u, // VLQ(2997) = 0x97 0x35 => exactly 1.0 second!
+        };
+        auto info29 = peek_midi(smpte2997_mid);
+        TEST_CHECK(info29.is_ok() && near_f64(info29->duration_sec, 1.0, 1e-9));
+
+        // Invalid SMPTE fps (-20 = 0xEC) must be rejected
+        const u8 bad_smpte[] = {
+            'M', 'T', 'h', 'd', 0, 0, 0, 6, 0, 0, 0, 1, 0xECu, 0x28u,
+            'M', 'T', 'r', 'k', 0, 0, 0, 4, 0, 0xFFu, 0x2Fu, 0x00u,
+        };
+        TEST_CHECK(decode_midi(bad_smpte).is_err());
+    }
+
+    // 2. MP3 free-format bitrate (bitrate_idx == 0) frame detection & decoding
+    {
+        // Construct 3 consecutive MPEG-1 Layer III free-format frames (bitrate_idx=0, 44100 Hz, mono, frame_size=200 bytes)
+        const usize fsz = 200u;
+        Array<u8> free_mp3(fsz * 3u, u8{0});
+        for (usize f = 0; f < 3u; ++f) {
+            u8* fp = free_mp3.data() + f * fsz;
+            fp[0] = 0xFFu;
+            fp[1] = 0xFBu; // MPEG-1, Layer III, no CRC
+            fp[2] = 0x00u; // bitrate_idx = 0 (free-format!), sr_idx = 0 (44100 Hz), padding = 0
+            fp[3] = 0xC0u; // Mono
+        }
+        TEST_CHECK(is_mp3_bytes(free_mp3));
+        auto info = peek_mp3(free_mp3);
+        TEST_CHECK(info.is_ok() && info->channels == 1u && info->sample_rate == 44100.0);
+        auto dec = decode_mp3(free_mp3);
+        TEST_CHECK(dec.is_ok() && dec->frames == 3u * 1152u && dec->channels == 1u);
+    }
+
+    // 3. MPEG-1 Layer I frame sniffing & decoding (384 samples/frame)
+    {
+        // MPEG-1 Layer I (layer=3 -> 0xFF 0xFF), 128 kbps (bitrate_idx=4), 48000 Hz (sr_idx=1), mono:
+        // frame_size = ((384 * 128 * 125) / 48000) & ~3 = 128 bytes
+        const usize fsz = 128u;
+        Array<u8> mp1(fsz * 2u, u8{0});
+        for (usize f = 0; f < 2u; ++f) {
+            u8* fp = mp1.data() + f * fsz;
+            fp[0] = 0xFFu;
+            fp[1] = 0xFFu; // MPEG-1, Layer I, no CRC
+            fp[2] = 0x44u; // bitrate_idx = 4 (128 kbps), sr_idx = 1 (48000 Hz), pad = 0
+            fp[3] = 0xC0u; // Mono
+        }
+        TEST_CHECK(is_mp3_bytes(mp1));
+        auto info = peek_mp3(mp1);
+        TEST_CHECK(info.is_ok() && info->compression_method == "MPEG Layer I" && info->sample_rate == 48000.0);
+        auto dec = decode_mp3(mp1);
+        TEST_CHECK(dec.is_ok() && dec->frames == 2u * 384u && dec->channels == 1u);
+    }
+}
+
 i32 cli_encode_midi(StringRef out_path) {
     const MidiNote notes[] = {
         MidiNote{.track = 0, .channel = 0, .note_number = 60, .velocity = 100, .start_time_sec = 0.0, .end_time_sec = 0.5},
@@ -1318,6 +1436,7 @@ int main(int argc, char** argv) {
     test_au_codec();
     test_midi_codec();
     test_file_io_and_robustness();
+    test_spec_completeness();
 
     if (g_tests_failed != 0) {
         keel::eprintln("{} test check(s) FAILED ({} passed)", g_tests_failed, g_tests_passed);

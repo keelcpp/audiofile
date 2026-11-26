@@ -135,12 +135,23 @@ struct ParsedSmf {
         return ErrorCode::InvalidData;
     }
 
-    u16 tpqn = 480u;
+    u16 tpqn = 0u;
+    bool is_smpte = false;
+    f64 smpte_sec_per_tick = 0.0;
     if ((raw_div & 0x8000u) == 0u) {
         if (raw_div == 0u) [[unlikely]] {
             return ErrorCode::InvalidData;
         }
         tpqn = raw_div;
+    } else {
+        const i8 fps_neg = as<i8>((raw_div >> 8) & 0xFFu);
+        const u8 sub_ticks = as<u8>(raw_div & 0xFFu);
+        if ((fps_neg != -24 && fps_neg != -25 && fps_neg != -29 && fps_neg != -30) || sub_ticks == 0u) [[unlikely]] {
+            return ErrorCode::InvalidData;
+        }
+        is_smpte = true;
+        const f64 smpte_fps = (fps_neg == -29) ? 29.97 : as<f64>(-as<i32>(fps_neg));
+        smpte_sec_per_tick = 1.0 / (smpte_fps * as<f64>(sub_ticks));
     }
 
     ArenaTemp scratch = get_scratch(dst_alloc);
@@ -308,6 +319,25 @@ struct ParsedSmf {
             }
         }
 
+        // Close any dangling Note-On events cleanly at the track's End of Track tick.
+        if (build_notes) {
+            for (u8 ch = 0; ch < 16u; ++ch) {
+                for (u8 note = 0; note < 128u; ++note) {
+                    ActiveNoteQueue& q = active_slots[(as<usize>(ch) << 7) | as<usize>(note)];
+                    while (q.head) {
+                        ActiveNoteNode* node = q.head;
+                        q.head = node->next;
+                        const u64 end_tick = (current_tick >= node->start_tick) ? current_tick : node->start_tick;
+                        pending_notes.push_back(
+                            PendingNote{trk, ch, note, node->velocity, node->start_tick, end_tick});
+                        node->next = free_list;
+                        free_list = node;
+                    }
+                    q.tail = nullptr;
+                }
+            }
+        }
+
         if (current_tick > max_tick) {
             max_tick = current_tick;
         }
@@ -329,18 +359,26 @@ struct ParsedSmf {
         } else {
             const TempoSegment& prev = segments.back();
             const u64 dt = ev.tick - prev.tick;
-            const f64 sec_per_tick = (as<f64>(prev.us_per_quarter) / 1000000.0) / as<f64>(tpqn);
+            const f64 sec_per_tick =
+                is_smpte ? smpte_sec_per_tick : ((as<f64>(prev.us_per_quarter) / 1000000.0) / as<f64>(tpqn));
             segments.push_back(
                 TempoSegment{ev.tick, prev.time_sec + as<f64>(dt) * sec_per_tick, ev.us_per_quarter});
         }
     }
+
+    auto resolve_sec = [&](u64 tick) noexcept -> f64 {
+        if (is_smpte) {
+            return as<f64>(tick) * smpte_sec_per_tick;
+        }
+        return tick_to_seconds(tick, segments.as_ref(), tpqn);
+    };
 
     ParsedSmf out;
     out.format = format;
     out.num_tracks = num_tracks;
     out.tpqn = tpqn;
     out.initial_tempo_bpm = 60000000.0 / as<f64>(segments[0].us_per_quarter);
-    out.duration_sec = tick_to_seconds(max_tick, segments.as_ref(), tpqn);
+    out.duration_sec = resolve_sec(max_tick);
     out.note_on_count = note_on_count;
     out.track_name = keel::move(first_track_name);
     out.notes = Array<MidiNote>(dst_alloc);
@@ -354,8 +392,8 @@ struct ParsedSmf {
             n.channel = pn.channel;
             n.note_number = pn.note_number;
             n.velocity = pn.velocity;
-            n.start_time_sec = tick_to_seconds(pn.start_tick, segments.as_ref(), tpqn);
-            n.end_time_sec = tick_to_seconds(pn.end_tick, segments.as_ref(), tpqn);
+            n.start_time_sec = resolve_sec(pn.start_tick);
+            n.end_time_sec = resolve_sec(pn.end_tick);
             if (n.end_time_sec < n.start_time_sec) {
                 n.end_time_sec = n.start_time_sec;
             }

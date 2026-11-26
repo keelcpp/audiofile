@@ -2,7 +2,7 @@
 
 #include "keel/arena.h"
 
-// Full ISO/IEC 11172-3 (MPEG-1) & ISO/IEC 13818-3 (MPEG-2 / MPEG-2.5) Layer III decoder.
+// Full ISO/IEC 11172-3 (MPEG-1) & ISO/IEC 13818-3 (MPEG-2 / MPEG-2.5) Layer I / II / III decoder.
 // Standard specification tables (Annex B Huffman trees, scalefactor bands, polyphase window)
 // and scalar synthesis pipeline adapted from the CC0 1.0 Public Domain minimp3 implementation
 // (https://github.com/lieff/minimp3) into pure C++20 keel.
@@ -16,7 +16,9 @@ bool is_mp3_bytes(ArrayRef<u8> bytes) noexcept {
     if (d[0] == 0xFFu && (d[1] & 0xE0u) == 0xE0u) {
         const u8 version = as<u8>((d[1] >> 3) & 0x03u);
         const u8 layer = as<u8>((d[1] >> 1) & 0x03u);
-        return version != 1u && layer == 1u;
+        const u8 bitrate_idx = as<u8>((d[2] >> 4) & 0x0Fu);
+        const u8 sr_idx = as<u8>((d[2] >> 2) & 0x03u);
+        return version != 1u && layer != 0u && bitrate_idx != 15u && sr_idx != 3u;
     }
     return false;
 }
@@ -255,8 +257,9 @@ struct Id3ParseResult {
 
 struct FrameHeader {
     u8 version = 0; // 0=2.5, 2=2, 3=1
-    u8 layer = 0;   // 1=Layer III
+    u8 layer = 0;   // 1=Layer III, 2=Layer II, 3=Layer I
     bool error_protection = false;
+    bool is_free_format = false;
     u16 bitrate = 0;
     u32 sample_rate = 0;
     bool padding = false;
@@ -267,7 +270,22 @@ struct FrameHeader {
     u16 num_channels = 0;
 };
 
-[[nodiscard]] bool parse_frame_header(const u8* p, usize len, FrameHeader& hdr) noexcept {
+[[nodiscard]] bool hdr_valid_raw(const u8* p) noexcept {
+    if (p[0] != 0xFFu || (p[1] & 0xE0u) != 0xE0u) return false;
+    const u8 version = as<u8>((p[1] >> 3) & 0x03u);
+    const u8 layer = as<u8>((p[1] >> 1) & 0x03u);
+    const u8 br_idx = as<u8>((p[2] >> 4) & 0x0Fu);
+    const u8 sr_idx = as<u8>((p[2] >> 2) & 0x03u);
+    return version != 1u && layer != 0u && br_idx != 15u && sr_idx != 3u;
+}
+
+[[nodiscard]] bool hdr_compare_raw(const u8* h1, const u8* h2) noexcept {
+    return hdr_valid_raw(h2) && (((h1[1] ^ h2[1]) & 0xFEu) == 0u) && (((h1[2] ^ h2[2]) & 0x0Cu) == 0u) &&
+           (((h1[2] & 0xF0u) == 0u) == ((h2[2] & 0xF0u) == 0u));
+}
+
+[[nodiscard]] bool parse_frame_header(const u8* p, usize len, FrameHeader& hdr,
+                                      u16 free_format_base = 0u) noexcept {
     if (len < 4) return false;
     if (p[0] != 0xFFu || (p[1] & 0xE0u) != 0xE0u) return false;
 
@@ -275,44 +293,108 @@ struct FrameHeader {
     hdr.layer = as<u8>((p[1] >> 1) & 0x03u);
     hdr.error_protection = (p[1] & 0x01u) == 0u;
 
-    if (hdr.version == 1u || hdr.layer != 1u) return false;
+    if (hdr.version == 1u || hdr.layer == 0u) return false;
 
     const u8 bitrate_idx = as<u8>((p[2] >> 4) & 0x0Fu);
     const u8 sr_idx = as<u8>((p[2] >> 2) & 0x03u);
     hdr.padding = ((p[2] >> 1) & 0x01u) != 0u;
 
-    if (bitrate_idx == 0u || bitrate_idx == 15u || sr_idx == 3u) return false;
+    if (bitrate_idx == 15u || sr_idx == 3u) return false;
 
-    hdr.bitrate = kBitrates[hdr.version][hdr.layer][bitrate_idx];
     hdr.sample_rate = kSampleRates[hdr.version][sr_idx];
-    if (hdr.bitrate == 0u || hdr.sample_rate == 0u) return false;
+    if (hdr.sample_rate == 0u) return false;
 
     hdr.channel_mode = as<u8>((p[3] >> 6) & 0x03u);
     hdr.mode_extension = as<u8>((p[3] >> 4) & 0x03u);
     hdr.num_channels = (hdr.channel_mode == 3u) ? u16{1} : u16{2};
 
-    if (hdr.version == 3u) {
+    if (hdr.layer == 3u) {
+        hdr.samples_per_frame = 384u;
+    } else if (hdr.layer == 2u) {
         hdr.samples_per_frame = 1152u;
-        hdr.frame_size =
-            as<u16>((144000u * as<u32>(hdr.bitrate)) / hdr.sample_rate + (hdr.padding ? 1u : 0u));
     } else {
-        hdr.samples_per_frame = 576u;
-        hdr.frame_size =
-            as<u16>((72000u * as<u32>(hdr.bitrate)) / hdr.sample_rate + (hdr.padding ? 1u : 0u));
+        hdr.samples_per_frame = (hdr.version == 3u) ? u16{1152} : u16{576};
     }
+
+    const u32 pad_bytes = hdr.padding ? ((hdr.layer == 3u) ? 4u : 1u) : 0u;
+    if (bitrate_idx == 0u) {
+        if (free_format_base < 4u) return false;
+        hdr.is_free_format = true;
+        hdr.bitrate = as<u16>((as<u64>(free_format_base) * as<u64>(hdr.sample_rate)) /
+                              (as<u64>(hdr.samples_per_frame) * 125ULL));
+        hdr.frame_size = as<u16>(as<u32>(free_format_base) + pad_bytes);
+        return hdr.frame_size >= 4u && hdr.frame_size <= 2308u;
+    }
+
+    hdr.is_free_format = false;
+    hdr.bitrate = kBitrates[hdr.version][hdr.layer][bitrate_idx];
+    if (hdr.bitrate == 0u) return false;
+
+    u32 frame_bytes = (as<u32>(hdr.samples_per_frame) * as<u32>(hdr.bitrate) * 125u) / hdr.sample_rate;
+    if (hdr.layer == 3u) {
+        frame_bytes &= ~3u;
+    }
+    hdr.frame_size = as<u16>(frame_bytes + pad_bytes);
     return hdr.frame_size >= 4u;
+}
+
+[[nodiscard]] bool find_first_frame(const u8* d, usize start, usize end, FrameHeader& out_hdr, usize& out_pos,
+                                    u16& out_free_base) noexcept {
+    constexpr usize kMaxFreeFormatFrameSize = 2304u;
+    out_free_base = 0u;
+    usize pos = start;
+    while (pos + 4u <= end) {
+        const u8* p = d + pos;
+        if (!hdr_valid_raw(p)) {
+            ++pos;
+            continue;
+        }
+        const u8 br_idx = as<u8>((p[2] >> 4) & 0x0Fu);
+        if (br_idx != 0u) {
+            if (parse_frame_header(p, end - pos, out_hdr, 0u)) {
+                out_pos = pos;
+                return true;
+            }
+            ++pos;
+            continue;
+        }
+        // Free-format bitrate (bitrate_idx == 0): probe for consecutive matching headers to derive frame size.
+        const u8 layer = as<u8>((p[1] >> 1) & 0x03u);
+        const u32 pad0 = ((p[2] & 0x02u) != 0u) ? ((layer == 3u) ? 4u : 1u) : 0u;
+        const usize avail = end - pos;
+        const usize max_k = keel::min<usize>(kMaxFreeFormatFrameSize, avail);
+        for (usize k = 4u + pad0; k + 4u <= max_k; ++k) {
+            if (!hdr_compare_raw(p, p + k)) continue;
+            const usize base = k - pad0;
+            if (base < 4u || base > kMaxFreeFormatFrameSize) continue;
+            const u32 pad1 = ((p[k + 2u] & 0x02u) != 0u) ? ((layer == 3u) ? 4u : 1u) : 0u;
+            const usize next_off = k + base + pad1;
+            const bool confirmed = (next_off == avail) || (next_off + 4u <= avail && hdr_compare_raw(p, p + next_off));
+            if (confirmed && parse_frame_header(p, avail, out_hdr, as<u16>(base))) {
+                out_free_base = as<u16>(base);
+                out_pos = pos;
+                return true;
+            }
+        }
+        ++pos;
+    }
+    return false;
 }
 
 struct VbrHeaderInfo {
     bool is_vbr_tag_frame = false;
     bool has_frames = false;
     bool has_bytes = false;
+    bool has_gapless = false;
     u32 total_frames = 0;
     u32 total_bytes = 0;
+    u32 enc_delay = 0;
+    u32 enc_padding = 0;
 };
 
 [[nodiscard]] VbrHeaderInfo parse_vbr_header(const u8* frame_ptr, usize avail_bytes, const FrameHeader& hdr) noexcept {
     VbrHeaderInfo vbr{};
+    if (hdr.layer != 1u) return vbr;
     const usize frame_len = keel::min(avail_bytes, as<usize>(hdr.frame_size));
     const usize crc_bytes = hdr.error_protection ? 2u : 0u;
     const usize side_info_size =
@@ -333,6 +415,29 @@ struct VbrHeaderInfo {
             if ((flags & 0x02u) != 0u && cur + 4u <= frame_len) {
                 vbr.total_bytes = audio_detail::read_u32_be(frame_ptr + cur);
                 vbr.has_bytes = true;
+                cur += 4u;
+            }
+            if ((flags & 0x04u) != 0u && cur + 100u <= frame_len) {
+                cur += 100u; // TOC
+            }
+            if ((flags & 0x08u) != 0u && cur + 4u <= frame_len) {
+                cur += 4u; // Quality indicator
+            }
+            // LAME / Lavc / Lavf Info tag extension (encoder delay + padding at +21..+23)
+            if (cur + 24u <= frame_len) {
+                const u8* lp = frame_ptr + cur;
+                if (mem_eq(lp, "LAME", 4) || mem_eq(lp, "Lavc", 4) || mem_eq(lp, "Lavf", 4) || mem_eq(lp, "GOGO", 4)) {
+                    const u8 b0 = lp[21];
+                    const u8 b1 = lp[22];
+                    const u8 b2 = lp[23];
+                    const u32 delay = (as<u32>(b0) << 4) | (as<u32>(b1) >> 4);
+                    const u32 pad = ((as<u32>(b1) & 0x0Fu) << 8) | as<u32>(b2);
+                    if (delay > 0u || pad > 0u) {
+                        vbr.has_gapless = true;
+                        vbr.enc_delay = delay;
+                        vbr.enc_padding = pad;
+                    }
+                }
             }
             return vbr;
         }
@@ -1417,6 +1522,224 @@ void mp3d_synth_granule(f32* qmf_state, f32* grbuf, i32 nbands, i32 nch, f32* pc
     }
 }
 
+// ============================================================================
+// ISO/IEC 11172-3 & 13818-3 Layer I / II Core Decoder (CC0 minimp3 port)
+// ============================================================================
+
+struct L12ScaleInfo {
+    f32 scf[3 * 64]{};
+    u8 total_bands = 0;
+    u8 stereo_bands = 0;
+    u8 bitalloc[64]{};
+    u8 scfcod[64]{};
+};
+
+struct L12SubbandAlloc {
+    u8 tab_offset = 0;
+    u8 code_tab_width = 0;
+    u8 band_count = 0;
+};
+
+[[nodiscard]] const L12SubbandAlloc* l12_subband_alloc_table(const u8* hdr_bytes, const FrameHeader& hdr,
+                                                             L12ScaleInfo& sci) noexcept {
+    static constexpr L12SubbandAlloc kAllocL1[] = {{76, 4, 32}};
+    static constexpr L12SubbandAlloc kAllocL2M2[] = {{60, 4, 4}, {44, 3, 7}, {44, 2, 19}};
+    static constexpr L12SubbandAlloc kAllocL2M1[] = {{0, 4, 3}, {16, 4, 8}, {32, 3, 12}, {40, 2, 7}};
+    static constexpr L12SubbandAlloc kAllocL2M1Low[] = {{44, 4, 2}, {44, 3, 10}};
+
+    const i32 mode = as<i32>(hdr.channel_mode);
+    const i32 stereo_bands =
+        (mode == 3) ? 0 : ((mode == 1) ? ((as<i32>(hdr.mode_extension) << 2) + 4) : 32);
+
+    const L12SubbandAlloc* alloc = kAllocL1;
+    i32 nbands = 32;
+    if (hdr.layer == 3u) {
+        alloc = kAllocL1;
+        nbands = 32;
+    } else if (!hdr_test_mpeg1(hdr_bytes)) {
+        alloc = kAllocL2M2;
+        nbands = 30;
+    } else {
+        const i32 sr_idx = hdr_get_sample_rate_idx(hdr_bytes);
+        u32 kbps = as<u32>(hdr.bitrate) >> ((mode != 3) ? 1u : 0u);
+        if (hdr.is_free_format || kbps == 0u) {
+            kbps = 192u;
+        }
+        alloc = kAllocL2M1;
+        nbands = 27;
+        if (kbps < 56u) {
+            alloc = kAllocL2M1Low;
+            nbands = (sr_idx == 2) ? 12 : 8;
+        } else if (kbps >= 96u && sr_idx != 1) {
+            nbands = 30;
+        }
+    }
+
+    sci.total_bands = as<u8>(nbands);
+    sci.stereo_bands = as<u8>(keel::min(stereo_bands, nbands));
+    return alloc;
+}
+
+void l12_read_scalefactors(BitStream& bs, const u8* pba, const u8* scfcod, i32 bands, f32* scf) noexcept {
+    static constexpr f32 kDeqL12[18 * 3] = {
+        9.53674316e-07f / 3.0f,     7.56931807e-07f / 3.0f,     6.00777173e-07f / 3.0f,
+        9.53674316e-07f / 7.0f,     7.56931807e-07f / 7.0f,     6.00777173e-07f / 7.0f,
+        9.53674316e-07f / 15.0f,    7.56931807e-07f / 15.0f,    6.00777173e-07f / 15.0f,
+        9.53674316e-07f / 31.0f,    7.56931807e-07f / 31.0f,    6.00777173e-07f / 31.0f,
+        9.53674316e-07f / 63.0f,    7.56931807e-07f / 63.0f,    6.00777173e-07f / 63.0f,
+        9.53674316e-07f / 127.0f,   7.56931807e-07f / 127.0f,   6.00777173e-07f / 127.0f,
+        9.53674316e-07f / 255.0f,   7.56931807e-07f / 255.0f,   6.00777173e-07f / 255.0f,
+        9.53674316e-07f / 511.0f,   7.56931807e-07f / 511.0f,   6.00777173e-07f / 511.0f,
+        9.53674316e-07f / 1023.0f,  7.56931807e-07f / 1023.0f,  6.00777173e-07f / 1023.0f,
+        9.53674316e-07f / 2047.0f,  7.56931807e-07f / 2047.0f,  6.00777173e-07f / 2047.0f,
+        9.53674316e-07f / 4095.0f,  7.56931807e-07f / 4095.0f,  6.00777173e-07f / 4095.0f,
+        9.53674316e-07f / 8191.0f,  7.56931807e-07f / 8191.0f,  6.00777173e-07f / 8191.0f,
+        9.53674316e-07f / 16383.0f, 7.56931807e-07f / 16383.0f, 6.00777173e-07f / 16383.0f,
+        9.53674316e-07f / 32767.0f, 7.56931807e-07f / 32767.0f, 6.00777173e-07f / 32767.0f,
+        9.53674316e-07f / 65535.0f, 7.56931807e-07f / 65535.0f, 6.00777173e-07f / 65535.0f,
+        9.53674316e-07f / 3.0f,     7.56931807e-07f / 3.0f,     6.00777173e-07f / 3.0f,
+        9.53674316e-07f / 5.0f,     7.56931807e-07f / 5.0f,     6.00777173e-07f / 5.0f,
+        9.53674316e-07f / 9.0f,     7.56931807e-07f / 9.0f,     6.00777173e-07f / 9.0f,
+    };
+
+    for (i32 i = 0; i < bands; ++i) {
+        f32 s = 0.0f;
+        const i32 ba = as<i32>(pba[i]);
+        const i32 mask = (ba >= 2 && ba <= 19) ? (4 + ((19 >> scfcod[i]) & 3)) : 0;
+        for (i32 m = 4; m != 0; m >>= 1) {
+            if ((mask & m) != 0) {
+                const u32 b = bs_get_bits(bs, 6);
+                const usize idx = as<usize>(ba * 3 - 6) + as<usize>(b % 3u);
+                const u32 shift = b / 3u;
+                const u32 pow2 = (shift <= 21u) ? (u32{1} << (21u - shift)) : 0u;
+                s = kDeqL12[idx] * as<f32>(pow2);
+            }
+            *scf++ = s;
+        }
+    }
+}
+
+void l12_read_scale_info(const u8* hdr_bytes, const FrameHeader& hdr, BitStream& bs, L12ScaleInfo& sci) noexcept {
+    static constexpr u8 kBitallocCodeTab[92] = {
+        0, 17, 3,  4,  5,  6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+        0, 17, 18, 3,  19, 4, 5, 6, 7, 8,  9,  10, 11, 12, 13, 16,
+        0, 17, 18, 3,  19, 4, 5, 16,
+        0, 17, 18, 16,
+        0, 17, 18, 19, 4,  5, 6, 7, 8, 9,  10, 11, 12, 13, 14, 15,
+        0, 17, 18, 3,  19, 4, 5, 6, 7, 8,  9,  10, 11, 12, 13, 14,
+        0, 2,  3,  4,  5,  6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+    };
+
+    const L12SubbandAlloc* subband_alloc = l12_subband_alloc_table(hdr_bytes, hdr, sci);
+    i32 k = 0;
+    i32 ba_bits = 0;
+    const u8* ba_code_tab = kBitallocCodeTab;
+
+    for (i32 i = 0; i < as<i32>(sci.total_bands); ++i) {
+        if (i == k) {
+            k += as<i32>(subband_alloc->band_count);
+            ba_bits = as<i32>(subband_alloc->code_tab_width);
+            ba_code_tab = kBitallocCodeTab + subband_alloc->tab_offset;
+            ++subband_alloc;
+        }
+        u8 ba = ba_code_tab[bs_get_bits(bs, ba_bits)];
+        sci.bitalloc[2 * i] = ba;
+        if (i < as<i32>(sci.stereo_bands)) {
+            ba = ba_code_tab[bs_get_bits(bs, ba_bits)];
+        }
+        sci.bitalloc[2 * i + 1] = (sci.stereo_bands != 0u) ? ba : u8{0};
+    }
+
+    for (i32 i = 0; i < 2 * as<i32>(sci.total_bands); ++i) {
+        sci.scfcod[i] =
+            (sci.bitalloc[i] != 0u) ? ((hdr.layer == 3u) ? u8{2} : as<u8>(bs_get_bits(bs, 2))) : u8{6};
+    }
+
+    l12_read_scalefactors(bs, sci.bitalloc, sci.scfcod, as<i32>(sci.total_bands) * 2, sci.scf);
+
+    for (i32 i = as<i32>(sci.stereo_bands); i < as<i32>(sci.total_bands); ++i) {
+        sci.bitalloc[2 * i + 1] = 0u;
+    }
+}
+
+[[nodiscard]] i32 l12_dequantize_granule(f32* grbuf, BitStream& bs, const L12ScaleInfo& sci, i32 group_size) noexcept {
+    i32 choff = 576;
+    for (i32 j = 0; j < 4; ++j) {
+        f32* dst = grbuf + group_size * j;
+        for (i32 i = 0; i < 2 * as<i32>(sci.total_bands); ++i) {
+            const i32 ba = as<i32>(sci.bitalloc[i]);
+            if (ba != 0) {
+                if (ba < 17) {
+                    const i32 half = (1 << (ba - 1)) - 1;
+                    for (i32 k = 0; k < group_size; ++k) {
+                        dst[k] = as<f32>(as<i32>(bs_get_bits(bs, ba)) - half);
+                    }
+                } else {
+                    const u32 mod = (2u << (ba - 17)) + 1u; // 3, 5, 9
+                    u32 code = bs_get_bits(bs, as<i32>(mod + 2u - (mod >> 3))); // 5, 7, 10
+                    for (i32 k = 0; k < group_size; ++k, code /= mod) {
+                        dst[k] = as<f32>(as<i32>(code % mod) - as<i32>(mod / 2u));
+                    }
+                }
+            }
+            dst += choff;
+            choff = 18 - choff;
+        }
+    }
+    return group_size * 4;
+}
+
+void l12_apply_scf_384(const L12ScaleInfo& sci, const f32* scf, f32* dst) noexcept {
+    const usize tail_bands = as<usize>(sci.total_bands) - as<usize>(sci.stereo_bands);
+    if (tail_bands > 0) {
+        mem_copy(dst + 576 + as<usize>(sci.stereo_bands) * 18u, dst + as<usize>(sci.stereo_bands) * 18u,
+                 tail_bands * 18u * sizeof(f32));
+    }
+    for (i32 i = 0; i < as<i32>(sci.total_bands); ++i, dst += 18, scf += 6) {
+        for (i32 k = 0; k < 12; ++k) {
+            dst[k + 0] *= scf[0];
+            dst[k + 576] *= scf[3];
+        }
+    }
+}
+
+[[nodiscard]] u32 decode_l12_frame(L3DecoderState& dec, L3Scratch& scratch, const u8* frame_ptr,
+                                   const FrameHeader& hdr, f32* pcm_interleaved) noexcept {
+    mem_copy(dec.header, frame_ptr, 4);
+
+    BitStream bs_frame{};
+    bs_init(bs_frame, frame_ptr + 4, as<i32>(hdr.frame_size) - 4);
+    if (hdr.error_protection) {
+        (void)bs_get_bits(bs_frame, 16);
+    }
+
+    L12ScaleInfo sci{};
+    l12_read_scale_info(frame_ptr, hdr, bs_frame, sci);
+
+    const i32 nch = as<i32>(hdr.num_channels);
+    const i32 mpeg_layer = 4 - as<i32>(hdr.layer); // 1 for Layer I, 2 for Layer II
+    const i32 group_size = mpeg_layer | 1;         // 1 for Layer I, 3 for Layer II
+    f32* pcm = pcm_interleaved;
+
+    mem_zero(scratch.grbuf, sizeof(scratch.grbuf));
+    i32 acc = 0;
+    for (i32 igr = 0; igr < 3; ++igr) {
+        acc += l12_dequantize_granule(scratch.grbuf[0] + acc, bs_frame, sci, group_size);
+        if (acc == 12) {
+            acc = 0;
+            l12_apply_scf_384(sci, sci.scf + igr, scratch.grbuf[0]);
+            mp3d_synth_granule(dec.qmf_state, scratch.grbuf[0], 12, nch, pcm, scratch.syn[0]);
+            mem_zero(scratch.grbuf, sizeof(scratch.grbuf));
+            pcm += 384 * nch;
+        }
+        if (bs_frame.pos > bs_frame.limit) {
+            dec.reserv = 0;
+            return 0u;
+        }
+    }
+    return as<u32>(hdr.samples_per_frame);
+}
+
 // Decodes one MPEG-1/2/2.5 Layer III frame into interleaved f32 PCM (`pcm` holds up to 1152*2 samples).
 // Returns number of PCM frames produced (1152 or 576), or 0 if side-info/reservoir failed.
 [[nodiscard]] u32 decode_l3_frame(L3DecoderState& dec, L3Scratch& scratch, const u8* frame_ptr,
@@ -1470,23 +1793,17 @@ Result<AudioInfo> peek_mp3(ArrayRef<u8> bytes, Allocator* alloc) {
 
     usize pos = id3.audio_start;
     mp3_detail::FrameHeader first_hdr{};
-    bool found = false;
-
-    while (pos + 4 <= id3.audio_end) {
-        if (mp3_detail::parse_frame_header(d + pos, id3.audio_end - pos, first_hdr)) {
-            found = true;
-            break;
-        }
-        ++pos;
-    }
-
-    if (!found) [[unlikely]] {
+    u16 free_format_base = 0u;
+    if (!mp3_detail::find_first_frame(d, id3.audio_start, id3.audio_end, first_hdr, pos, free_format_base)) [[unlikely]] {
         return ErrorCode::InvalidData;
     }
 
+    const char* layer_str = (first_hdr.layer == 3u)
+                                ? "MPEG Layer I"
+                                : ((first_hdr.layer == 2u) ? "MPEG Layer II" : "MPEG Layer III");
     AudioInfo info;
     info.format = AudioFormat::Mp3;
-    info.compression_method = String("MPEG Layer III", dst_alloc);
+    info.compression_method = String(layer_str, dst_alloc);
     info.channels = first_hdr.num_channels;
     info.sample_rate = as<f64>(first_hdr.sample_rate);
     info.bits_per_sample = 16;
@@ -1495,7 +1812,12 @@ Result<AudioInfo> peek_mp3(ArrayRef<u8> bytes, Allocator* alloc) {
 
     const mp3_detail::VbrHeaderInfo vbr = mp3_detail::parse_vbr_header(d + pos, id3.audio_end - pos, first_hdr);
     if (vbr.has_frames) {
-        info.total_frames = as<u64>(vbr.total_frames) * as<u64>(first_hdr.samples_per_frame);
+        u64 total = as<u64>(vbr.total_frames) * as<u64>(first_hdr.samples_per_frame);
+        if (vbr.has_gapless) {
+            const u64 trim = as<u64>(vbr.enc_delay) + as<u64>(vbr.enc_padding);
+            total = (total > trim) ? (total - trim) : 0ULL;
+        }
+        info.total_frames = total;
         info.duration_sec = as<f64>(info.total_frames) / info.sample_rate;
         if (info.duration_sec > 0.0) {
             const u64 stream_bytes =
@@ -1532,17 +1854,8 @@ Result<AudioBuffer> decode_mp3(ArrayRef<u8> bytes, const AudioDecodeOptions& opt
 
     usize pos = id3.audio_start;
     mp3_detail::FrameHeader first_hdr{};
-    bool found = false;
-
-    while (pos + 4 <= id3.audio_end) {
-        if (mp3_detail::parse_frame_header(d + pos, id3.audio_end - pos, first_hdr)) {
-            found = true;
-            break;
-        }
-        ++pos;
-    }
-
-    if (!found) [[unlikely]] {
+    u16 free_format_base = 0u;
+    if (!mp3_detail::find_first_frame(d, id3.audio_start, id3.audio_end, first_hdr, pos, free_format_base)) [[unlikely]] {
         return ErrorCode::InvalidData;
     }
     if (pos + first_hdr.frame_size > id3.audio_end) [[unlikely]] {
@@ -1556,6 +1869,23 @@ Result<AudioBuffer> decode_mp3(ArrayRef<u8> bytes, const AudioDecodeOptions& opt
     if (vbr.is_vbr_tag_frame) {
         pos += first_hdr.frame_size;
     }
+
+    // Standard ISO Layer III decoder delay (MDCT + polyphase filterbank = 529 samples).
+    // When a LAME/Lavc gapless tag is present, trim (enc_delay + 529) at start and
+    // max(0, enc_padding - 529) at end to match FFmpeg mp3float & MATLAB audioread length and phase.
+    constexpr u64 kL3DecoderDelay = 529ULL;
+    const u64 trim_start = vbr.has_gapless ? (as<u64>(vbr.enc_delay) + kL3DecoderDelay) : 0ULL;
+    const u64 trim_end =
+        (vbr.has_gapless && as<u64>(vbr.enc_padding) > kL3DecoderDelay)
+            ? (as<u64>(vbr.enc_padding) - kL3DecoderDelay)
+            : 0ULL;
+
+    const u64 raw_start =
+        (opts.start_frame <= Limits<u64>::kMax - trim_start) ? (opts.start_frame + trim_start) : Limits<u64>::kMax;
+    const u64 raw_end =
+        (opts.end_frame == Limits<u64>::kMax)
+            ? Limits<u64>::kMax
+            : ((opts.end_frame <= Limits<u64>::kMax - trim_start) ? (opts.end_frame + trim_start) : Limits<u64>::kMax);
 
     Array<f32> channel_pcm[2];
     for (u16 ch = 0; ch < num_channels; ++ch) {
@@ -1572,7 +1902,7 @@ Result<AudioBuffer> decode_mp3(ArrayRef<u8> bytes, const AudioDecodeOptions& opt
 
     while (pos + 4 <= id3.audio_end) {
         mp3_detail::FrameHeader hdr{};
-        if (!mp3_detail::parse_frame_header(d + pos, id3.audio_end - pos, hdr)) {
+        if (!mp3_detail::parse_frame_header(d + pos, id3.audio_end - pos, hdr, free_format_base)) {
             ++pos;
             continue;
         }
@@ -1585,17 +1915,20 @@ Result<AudioBuffer> decode_mp3(ArrayRef<u8> bytes, const AudioDecodeOptions& opt
 
         const u64 frame_start = stream_cursor;
         const u64 frame_end = stream_cursor + as<u64>(hdr.samples_per_frame);
-        const u64 win_lo = keel::max(frame_start, opts.start_frame);
-        const u64 win_hi = keel::min(frame_end, opts.end_frame);
+        const u64 win_lo = keel::max(frame_start, raw_start);
+        const u64 win_hi = keel::min(frame_end, raw_end);
 
-        // Decode frames up to opts.end_frame so bit reservoir, IMDCT overlap, and QMF state stay exact.
-        if (frame_start < opts.end_frame) {
+        // Decode frames up to raw_end so bit reservoir, IMDCT overlap, and QMF state stay exact.
+        if (frame_start < raw_end) {
             mem_zero(frame_interleaved, sizeof(frame_interleaved));
-            const u32 decoded_samples = mp3_detail::decode_l3_frame(*dec, *scratch, d + pos, hdr, frame_interleaved);
+            const u32 decoded_samples =
+                (hdr.layer == 1u)
+                    ? mp3_detail::decode_l3_frame(*dec, *scratch, d + pos, hdr, frame_interleaved)
+                    : mp3_detail::decode_l12_frame(*dec, *scratch, d + pos, hdr, frame_interleaved);
             if (win_hi > win_lo) {
                 const u64 add_count = win_hi - win_lo;
                 if (opts.max_frames > 0 &&
-                    as<u64>(channel_pcm[0].size()) + add_count > opts.max_frames) [[unlikely]] {
+                    as<u64>(channel_pcm[0].size()) + add_count > opts.max_frames + trim_end) [[unlikely]] {
                     return ErrorCode::OutOfRange;
                 }
 
@@ -1618,6 +1951,15 @@ Result<AudioBuffer> decode_mp3(ArrayRef<u8> bytes, const AudioDecodeOptions& opt
         pos += hdr.frame_size;
     }
 
+    const u64 logical_total =
+        (stream_cursor > trim_start + trim_end) ? (stream_cursor - trim_start - trim_end) : 0ULL;
+    const u64 max_valid_out = (logical_total > opts.start_frame) ? (logical_total - opts.start_frame) : 0ULL;
+    if (as<u64>(channel_pcm[0].size()) > max_valid_out) {
+        for (u16 ch = 0; ch < num_channels; ++ch) {
+            channel_pcm[ch].resize(as<usize>(max_valid_out));
+        }
+    }
+
     const u64 out_frames = as<u64>(channel_pcm[0].size());
     if (opts.max_frames > 0 && out_frames > opts.max_frames) [[unlikely]] {
         return ErrorCode::OutOfRange;
@@ -1630,7 +1972,7 @@ Result<AudioBuffer> decode_mp3(ArrayRef<u8> bytes, const AudioDecodeOptions& opt
     res.bits_per_sample = 16;
     res.channels = num_channels;
     res.frames = out_frames;
-    res.total_source_frames = stream_cursor;
+    res.total_source_frames = logical_total;
     res.sample_type = out_type;
     res.layout = opts.layout;
     res.metadata = keel::move(id3.metadata);

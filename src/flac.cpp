@@ -120,6 +120,8 @@ public:
     }
 
     void align_to_byte() noexcept { m_bits_left &= ~7u; }
+    [[nodiscard]] usize bits_consumed() const noexcept { return m_pos * 8u - as<usize>(m_bits_left); }
+    [[nodiscard]] usize byte_pos() const noexcept { return m_pos - as<usize>(m_bits_left >> 3); }
 
 private:
     const u8* m_data = nullptr;
@@ -281,6 +283,28 @@ struct FlacStreamHeader {
     return ErrorCode::Ok;
 }
 
+[[nodiscard]] u8 flac_crc8(const u8* data, usize len) noexcept {
+    u8 crc = 0;
+    for (usize i = 0; i < len; ++i) {
+        crc = as<u8>(crc ^ data[i]);
+        for (i32 b = 0; b < 8; ++b) {
+            crc = ((crc & 0x80u) != 0u) ? as<u8>((crc << 1) ^ 0x07u) : as<u8>(crc << 1);
+        }
+    }
+    return crc;
+}
+
+[[nodiscard]] u16 flac_crc16(const u8* data, usize len) noexcept {
+    u16 crc = 0;
+    for (usize i = 0; i < len; ++i) {
+        crc = as<u16>(crc ^ (as<u16>(data[i]) << 8));
+        for (i32 b = 0; b < 8; ++b) {
+            crc = ((crc & 0x8000u) != 0u) ? as<u16>((crc << 1) ^ 0x8005u) : as<u16>(crc << 1);
+        }
+    }
+    return crc;
+}
+
 [[nodiscard]] AudioSampleType flac_native_sample_type(u32 bps) noexcept {
     if (bps <= 8) return AudioSampleType::I8;
     if (bps <= 16) return AudioSampleType::I16;
@@ -333,7 +357,9 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
         subframe_buffers[ch] = ArenaArray<i64>(scratch.arena(), init_block);
     }
 
-    flac_detail::FlacBitReader br(bytes.data() + st.audio_offset, bytes.size() - st.audio_offset);
+    const u8* audio_data = bytes.data() + st.audio_offset;
+    const usize audio_len = bytes.size() - st.audio_offset;
+    flac_detail::FlacBitReader br(audio_data, audio_len);
     u64 stream_cursor = 0;
 
     while (!br.eof()) {
@@ -355,6 +381,12 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
                 break;
             }
         }
+
+        const usize sync_start_bits = br.bits_consumed() - 14u;
+        if ((sync_start_bits & 7u) != 0u) [[unlikely]] {
+            return ErrorCode::InvalidData;
+        }
+        const usize frame_start_byte = sync_start_bits >> 3;
 
         const u32 reserved1 = br.read_bits(1);
         const u32 blocking_strategy = br.read_bits(1);
@@ -410,9 +442,17 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
             (void)br.read_bits(16);
         }
 
-        (void)br.read_bits(8); // Header CRC-8
+        const usize header_end_byte = br.byte_pos();
+        const u32 hdr_crc = br.read_bits(8); // Header CRC-8 (RFC 9639 poly 0x07)
         if (br.overrun()) [[unlikely]] {
             return ErrorCode::EndOfFile;
+        }
+        if (header_end_byte < frame_start_byte || header_end_byte > audio_len) [[unlikely]] {
+            return ErrorCode::InvalidData;
+        }
+        const u8 calc_crc8 = flac_detail::flac_crc8(audio_data + frame_start_byte, header_end_byte - frame_start_byte);
+        if (as<u8>(hdr_crc) != calc_crc8) [[unlikely]] {
+            return ErrorCode::InvalidData;
         }
         if (block_size == 0u || block_size > 65536u) [[unlikely]] {
             return ErrorCode::InvalidData;
@@ -543,9 +583,18 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
         }
 
         br.align_to_byte();
-        (void)br.read_bits(16); // Frame footer CRC-16
+        const usize footer_pos_byte = br.byte_pos();
+        const u32 footer_crc = br.read_bits(16); // Frame footer CRC-16 (RFC 9639 poly 0x8005)
         if (br.overrun()) [[unlikely]] {
             return ErrorCode::EndOfFile;
+        }
+        if (footer_pos_byte < frame_start_byte || footer_pos_byte > audio_len) [[unlikely]] {
+            return ErrorCode::InvalidData;
+        }
+        const u16 calc_crc16 =
+            flac_detail::flac_crc16(audio_data + frame_start_byte, footer_pos_byte - frame_start_byte);
+        if (as<u16>(footer_crc) != calc_crc16) [[unlikely]] {
+            return ErrorCode::InvalidData;
         }
 
         if (num_channels == 2) {
