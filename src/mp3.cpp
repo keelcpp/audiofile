@@ -1927,7 +1927,7 @@ Result<AudioBuffer> decode_mp3(ArrayRef<u8> bytes, const AudioDecodeOptions& opt
                     : mp3_detail::decode_l12_frame(*dec, *scratch, d + pos, hdr, frame_interleaved);
             if (win_hi > win_lo) {
                 const u64 add_count = win_hi - win_lo;
-                if (opts.max_frames > 0 &&
+                if (opts.max_frames > 0 && opts.max_frames <= Limits<u64>::kMax - trim_end &&
                     as<u64>(channel_pcm[0].size()) + add_count > opts.max_frames + trim_end) [[unlikely]] {
                     return ErrorCode::OutOfRange;
                 }
