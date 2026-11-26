@@ -602,15 +602,38 @@ void test_mp3_codec() {
     xing_frame[51] = keel::as<u8>(total_vbr_bytes & 0xFFu);
     stream.append(xing_frame);
 
-    // Frames 1 & 2: Non-zero audio frames
+    // Frames 1 & 2: Valid MPEG-1 Layer III 128 kbps 44100 Hz Joint-Stereo frames
+    // Side info (32 bytes): main_data_begin=0, scfsi=0, gr0/gr1 ch0/ch1 have part2_3_length=64,
+    // big_values=0, global_gain=200, count1_table=1 (Table B -> non-zero quadruples in main data).
     for (i32 f = 0; f < 2; ++f) {
         Array<u8> af(frame_size, u8{0});
         af[0] = 0xFFu;
         af[1] = 0xFBu;
         af[2] = 0x90u;
         af[3] = 0x40u;
-        for (usize b = 4; b < frame_size; ++b) {
-            af[b] = keel::as<u8>((b * 37u + keel::as<usize>(f) * 13u) & 0x77u);
+        // Pack 32-byte MPEG-1 stereo side info MSB-first using FlacBitWriter
+        FlacBitWriter sbw;
+        sbw.write_bits(0, 9); // main_data_begin = 0
+        sbw.write_bits(0, 3); // private_bits
+        sbw.write_bits(0, 8); // scfsi[2][4]
+        for (i32 gr_ch = 0; gr_ch < 4; ++gr_ch) {
+            sbw.write_bits(64, 12);  // part2_3_length = 64 bits
+            sbw.write_bits(0, 9);    // big_values = 0
+            sbw.write_bits(160, 8);  // global_gain = 160 (moderate amplitude within [-1, 1])
+            sbw.write_bits(0, 4);    // scalefac_compress = 0 (0 bits of scalefactors)
+            sbw.write_bits(0, 1);    // window_switching_flag = 0
+            sbw.write_bits(0, 15);   // table_select[0..2]
+            sbw.write_bits(0, 4);    // region0_count
+            sbw.write_bits(0, 3);    // region1_count
+            sbw.write_bits(0, 1);    // preflag
+            sbw.write_bits(0, 1);    // scalefac_scale
+            sbw.write_bits(1, 1);    // count1table_select = 1 (Table B)
+        }
+        Array<u8> side = sbw.finish();
+        keel::mem_copy(af.data() + 4, side.data(), side.size());
+        // Main data starts at byte 36: Table B code 0x0 (4 ones) + alternating signs -> strong non-zero signal
+        for (usize b = 36; b < 36 + 32; ++b) {
+            af[b] = keel::as<u8>((b & 1u) ? 0x05u : 0x0Au);
         }
         stream.append(af);
     }
@@ -657,7 +680,7 @@ void test_mp3_codec() {
     TEST_CHECK(dec_slice->sample_type == AudioSampleType::I16);
 
     // MPEG-2 Layer III Mono (22050 Hz, 64 kbps => frame_size = 72000 * 64 / 22050 = 208 bytes, 576 samples)
-    Array<u8> mpeg2(208, u8{0x21});
+    Array<u8> mpeg2(208, u8{0});
     mpeg2[0] = 0xFFu;
     mpeg2[1] = 0xF3u; // MPEG-2 (version=2), Layer III (layer=1), no CRC
     mpeg2[2] = 0x80u; // bitrate_idx=8 (64 kbps in MPEG-2 L3), sr_idx=0 (22050 Hz), no pad
@@ -752,10 +775,14 @@ void test_aiff_codec() {
 
     Array<u8> aifc_alaw = Array<u8>::from(aifc_ulaw);
     keel::mem_copy(aifc_alaw.data() + 38, "alaw", 4);
-    aifc_alaw[58] = 0xD5u; // A-law near-zero positive
+    aifc_alaw[58] = 0xD5u; // A-law near-zero positive (+8)
+    aifc_alaw[59] = 0x55u; // A-law near-zero negative (-8)
+    aifc_alaw[60] = 0xAAu; // A-law loud positive (> +30000)
+    aifc_alaw[61] = 0x2Au; // A-law loud negative (< -30000)
     auto d_alaw = decode_aiff(aifc_alaw, AudioDecodeOptions{.native_sample_type = true});
     TEST_CHECK(d_alaw.is_ok() && d_alaw->sample_type == AudioSampleType::I16);
-    TEST_CHECK(keel::abs(d_alaw->samples_i16()[0]) <= 16);
+    TEST_CHECK(d_alaw->samples_i16()[0] == 8 && d_alaw->samples_i16()[1] == -8);
+    TEST_CHECK(d_alaw->samples_i16()[2] > 30000 && d_alaw->samples_i16()[3] < -30000);
 }
 
 // ============================================================================
@@ -1051,11 +1078,238 @@ void test_file_io_and_robustness() {
     TEST_CHECK((reinterpret_cast<usize>(cloned.samples_f64().data()) & (alignof(f64) - 1u)) == 0u);
     TEST_CHECK(ArrayRef<f64>(cloned.samples_f64()) == ArrayRef<f64>(arena_dec->samples_f64()));
     TEST_CHECK(cloned.metadata.title == "ArenaMeta");
+
+    // Hardening regressions:
+    // 1. AIFF non-finite extended80 sample rate (exp = 0x7FFE -> +Inf) must be rejected.
+    {
+        const u8 inf_aiff[] = {
+            'F', 'O', 'R', 'M', 0, 0, 0, 30, 'A', 'I', 'F', 'F',
+            'C', 'O', 'M', 'M', 0, 0, 0, 18, 0, 1, 0, 0, 0, 0, 0, 16,
+            0x7F, 0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0,
+        };
+        TEST_CHECK(peek_aiff(inf_aiff).error().code == ErrorCode::InvalidData);
+        TEST_CHECK(decode_aiff(inf_aiff).error().code == ErrorCode::InvalidData);
+    }
+
+    // 2. MIDI huge timestamp must fail with OutOfRange instead of UB cast.
+    {
+        const MidiNote huge{.note_number = 60, .velocity = 80, .start_time_sec = 1e18, .end_time_sec = 1e18 + 1.0};
+        TEST_CHECK(encode_midi(ArrayRef<MidiNote>(&huge, 1)).error().code == ErrorCode::OutOfRange);
+    }
+}
+
+// ============================================================================
+// CLI Mode Helpers for Reference & Adversarial Differential Testing
+// ============================================================================
+
+const char* sample_type_str(AudioSampleType st) noexcept {
+    switch (st) {
+        case AudioSampleType::U8: return "u8";
+        case AudioSampleType::I8: return "i8";
+        case AudioSampleType::I16: return "i16";
+        case AudioSampleType::I32: return "i32";
+        case AudioSampleType::F32: return "f32";
+        case AudioSampleType::F64: return "f64";
+    }
+    return "unknown";
+}
+
+bool parse_u64_arg(StringRef s, u64& out) noexcept {
+    if (s.empty()) return false;
+    u64 v = 0;
+    for (usize i = 0; i < s.size(); ++i) {
+        const char c = s[i];
+        if (c < '0' || c > '9') return false;
+        v = v * 10ULL + keel::as<u64>(c - '0');
+    }
+    out = v;
+    return true;
+}
+
+bool parse_stype_arg(StringRef s, AudioSampleType& out) noexcept {
+    if (s == "u8") { out = AudioSampleType::U8; return true; }
+    if (s == "i8") { out = AudioSampleType::I8; return true; }
+    if (s == "i16") { out = AudioSampleType::I16; return true; }
+    if (s == "i32") { out = AudioSampleType::I32; return true; }
+    if (s == "f32") { out = AudioSampleType::F32; return true; }
+    if (s == "f64") { out = AudioSampleType::F64; return true; }
+    return false;
+}
+
+i32 cli_decode(StringRef in_path, StringRef out_raw_path, bool native, u64 start_frame, u64 end_frame) {
+    auto bytes_res = fs_read_file(in_path);
+    if (!bytes_res) {
+        keel::eprintln("read error");
+        return 2;
+    }
+    const AudioFormat fmt = sniff_audio_format(*bytes_res);
+    AudioDecodeOptions opts;
+    opts.native_sample_type = native;
+    opts.start_frame = start_frame;
+    opts.end_frame = end_frame;
+    opts.max_frames = 10000000ULL;
+
+    auto dec = decode_audio(*bytes_res, opts);
+    if (!dec) {
+        keel::eprintln("decode error: {}", keel::as<i32>(dec.error().code));
+        return 3;
+    }
+    if (fs_write_file(out_raw_path, dec->data).is_err()) {
+        keel::eprintln("write error");
+        return 4;
+    }
+    keel::println(
+        "{{\"format\":\"{}\",\"channels\":{},\"sample_rate\":{},\"frames\":{},\"total_source_frames\":{},\"bits_per_sample\":{},\"sample_type\":\"{}\",\"title\":\"{}\",\"artist\":\"{}\",\"comment\":\"{}\"}}",
+        audio_format_name(fmt), dec->channels, dec->sample_rate, dec->frames, dec->total_source_frames,
+        dec->bits_per_sample, sample_type_str(dec->sample_type), dec->metadata.title, dec->metadata.artist,
+        dec->metadata.comment);
+    return 0;
+}
+
+i32 cli_encode(StringRef fmt_str, u64 sr, u64 ch, u64 frames, AudioSampleType st, u64 bps, bool flt,
+               StringRef in_raw, StringRef out_path, StringRef title, StringRef artist, StringRef comment) {
+    auto raw_res = fs_read_file(in_raw);
+    if (!raw_res) {
+        keel::eprintln("read raw error");
+        return 2;
+    }
+    AudioFormat fmt = AudioFormat::Unknown;
+    if (fmt_str == "wav") fmt = AudioFormat::Wav;
+    else if (fmt_str == "aiff") fmt = AudioFormat::Aiff;
+    else if (fmt_str == "au") fmt = AudioFormat::Au;
+    else return 2;
+
+    AudioView view{
+        .sample_rate = keel::as<f64>(sr),
+        .channels = keel::as<u16>(ch),
+        .frames = frames,
+        .sample_type = st,
+        .layout = AudioChannelLayout::Interleaved,
+        .data = *raw_res,
+    };
+    AudioEncodeOptions opts;
+    opts.bits_per_sample = keel::as<u16>(bps);
+    opts.float_samples = flt;
+    opts.title = title;
+    opts.artist = artist;
+    opts.comment = comment;
+
+    auto enc = encode_audio(view, fmt, opts);
+    if (!enc) {
+        keel::eprintln("encode error: {}", keel::as<i32>(enc.error().code));
+        return 3;
+    }
+    if (fs_write_file(out_path, *enc).is_err()) {
+        keel::eprintln("write error");
+        return 4;
+    }
+    return 0;
+}
+
+i32 cli_decode_midi(StringRef in_path) {
+    auto bytes_res = fs_read_file(in_path);
+    if (!bytes_res) return 2;
+    auto info = peek_midi(*bytes_res);
+    auto notes = decode_midi(*bytes_res);
+    if (!info || !notes) return 3;
+    keel::print(
+        "{{\"format\":{},\"num_tracks\":{},\"tpqn\":{},\"initial_tempo_bpm\":{},\"duration_sec\":{},\"total_notes\":{},\"track_name\":\"{}\",\"notes\":[",
+        info->format, info->num_tracks, info->ticks_per_quarter_note, info->initial_tempo_bpm, info->duration_sec,
+        info->total_notes, info->track_name);
+    for (usize i = 0; i < notes->size(); ++i) {
+        const MidiNote& n = (*notes)[i];
+        if (i > 0) keel::print(",");
+        keel::print(
+            "{{\"track\":{},\"channel\":{},\"note\":{},\"vel\":{},\"start\":{},\"end\":{},\"dur\":{}}}",
+            n.track, n.channel, n.note_number, n.velocity, n.start_time_sec, n.end_time_sec, n.duration_sec);
+    }
+    keel::println("]}");
+    return 0;
+}
+
+i32 cli_encode_midi(StringRef out_path) {
+    const MidiNote notes[] = {
+        MidiNote{.track = 0, .channel = 0, .note_number = 60, .velocity = 100, .start_time_sec = 0.0, .end_time_sec = 0.5},
+        MidiNote{.track = 0, .channel = 0, .note_number = 64, .velocity = 90, .start_time_sec = 0.25, .end_time_sec = 0.75},
+        MidiNote{.track = 0, .channel = 2, .note_number = 67, .velocity = 110, .start_time_sec = 0.5, .end_time_sec = 1.25},
+        MidiNote{.track = 0, .channel = 9, .note_number = 36, .velocity = 127, .start_time_sec = 1.0, .end_time_sec = 1.5},
+    };
+    auto enc = encode_midi(notes, MidiEncodeOptions{.ticks_per_quarter_note = 480, .tempo_bpm = 120.0});
+    if (!enc) return 3;
+    if (fs_write_file(out_path, *enc).is_err()) return 4;
+    return 0;
+}
+
+i32 cli_fuzz_dir(StringRef dir_path) {
+    usize total = 0;
+    usize ok_count = 0;
+    usize err_count = 0;
+    AudioDecodeOptions opts;
+    opts.max_frames = 250000ULL;
+
+    Error err = fs_read_dir(dir_path, [&](const DirEntry& ent) -> bool {
+        if (!ent.is_file) return true;
+        auto bytes_res = fs_read_file(ent.full_path);
+        if (!bytes_res) return true;
+        ++total;
+        const AudioFormat fmt = sniff_audio_format(*bytes_res);
+        if (fmt == AudioFormat::Midi) {
+            (void)peek_midi(*bytes_res);
+            auto m = decode_midi(*bytes_res);
+            if (m.is_ok()) ++ok_count;
+            else ++err_count;
+        } else {
+            (void)peek_audio(*bytes_res);
+            auto d = decode_audio(*bytes_res, opts);
+            if (d.is_ok()) ++ok_count;
+            else ++err_count;
+        }
+        return true;
+    });
+    if (err.is_err()) {
+        keel::eprintln("read_dir error");
+        return 2;
+    }
+    keel::println("Fuzzed {} audio/midi files (ok={}, rejected={}, crashes=0)", total, ok_count, err_count);
+    return 0;
 }
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc >= 4 && StringRef(argv[1]) == "--decode") {
+        bool native = (argc >= 5 && StringRef(argv[4]) == "1");
+        u64 sf = 0;
+        u64 ef = Limits<u64>::kMax;
+        if (argc >= 6) (void)parse_u64_arg(StringRef(argv[5]), sf);
+        if (argc >= 7 && StringRef(argv[6]) != "end") (void)parse_u64_arg(StringRef(argv[6]), ef);
+        return cli_decode(StringRef(argv[2]), StringRef(argv[3]), native, sf, ef);
+    }
+    if (argc >= 11 && StringRef(argv[1]) == "--encode") {
+        u64 sr = 0, ch = 0, frames = 0, bps = 16;
+        AudioSampleType st = AudioSampleType::F64;
+        if (!parse_u64_arg(StringRef(argv[3]), sr) || !parse_u64_arg(StringRef(argv[4]), ch) ||
+            !parse_u64_arg(StringRef(argv[5]), frames) || !parse_stype_arg(StringRef(argv[6]), st) ||
+            !parse_u64_arg(StringRef(argv[7]), bps)) {
+            return 2;
+        }
+        const bool flt = (StringRef(argv[8]) == "1");
+        StringRef title = (argc >= 12) ? StringRef(argv[11]) : StringRef{};
+        StringRef artist = (argc >= 13) ? StringRef(argv[12]) : StringRef{};
+        StringRef comment = (argc >= 14) ? StringRef(argv[13]) : StringRef{};
+        return cli_encode(StringRef(argv[2]), sr, ch, frames, st, bps, flt, StringRef(argv[9]), StringRef(argv[10]),
+                          title, artist, comment);
+    }
+    if (argc == 3 && StringRef(argv[1]) == "--decode-midi") {
+        return cli_decode_midi(StringRef(argv[2]));
+    }
+    if (argc == 3 && StringRef(argv[1]) == "--encode-midi") {
+        return cli_encode_midi(StringRef(argv[2]));
+    }
+    if (argc == 3 && StringRef(argv[1]) == "--fuzz") {
+        return cli_fuzz_dir(StringRef(argv[2]));
+    }
+
     test_sniffing_and_helpers();
     test_wav_codec();
     test_flac_codec();

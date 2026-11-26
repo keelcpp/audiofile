@@ -437,8 +437,14 @@ Result<Array<u8>> encode_midi(ArrayRef<MidiNote> notes, const MidiEncodeOptions&
             end_sec = n.start_time_sec + n.duration_sec;
         }
 
-        const u64 start_tick = as<u64>(keel::round_i64(n.start_time_sec / seconds_per_tick));
-        u64 end_tick = as<u64>(keel::round_i64(end_sec / seconds_per_tick));
+        const f64 start_ticks_f = n.start_time_sec / seconds_per_tick;
+        const f64 end_ticks_f = end_sec / seconds_per_tick;
+        if (!keel::is_finite(start_ticks_f) || !keel::is_finite(end_ticks_f) || start_ticks_f < 0.0 ||
+            end_ticks_f < 0.0 || start_ticks_f > 1e12 || end_ticks_f > 1e12) [[unlikely]] {
+            return ErrorCode::OutOfRange;
+        }
+        const u64 start_tick = as<u64>(keel::round_i64(start_ticks_f));
+        u64 end_tick = as<u64>(keel::round_i64(end_ticks_f));
         if (end_tick <= start_tick) {
             end_tick = start_tick + 1ULL;
         }

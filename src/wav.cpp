@@ -181,14 +181,15 @@ Result<AudioInfo> peek_wav(ArrayRef<u8> bytes, Allocator* alloc) {
             break;
     }
 
-    if (block_align == 0 && bits_per_sample > 0) {
-        block_align = as<u16>(num_channels * ((bits_per_sample + 7u) / 8u));
+    u64 eff_block_align = as<u64>(block_align);
+    if (eff_block_align == 0ULL && bits_per_sample > 0u) {
+        eff_block_align = as<u64>(num_channels) * as<u64>((bits_per_sample + 7u) / 8u);
     }
-    if (chunks.data.found && block_align > 0) {
-        info.total_frames = as<u64>(chunks.data.size) / as<u64>(block_align);
+    if (chunks.data.found && eff_block_align > 0ULL) {
+        info.total_frames = as<u64>(chunks.data.size) / eff_block_align;
         info.duration_sec = as<f64>(info.total_frames) / info.sample_rate;
         if (info.bit_rate_kbps == 0 && info.duration_sec > 0.0) {
-            info.bit_rate_kbps = as<u32>((as<f64>(len) * 8.0) / (info.duration_sec * 1000.0));
+            info.bit_rate_kbps = audio_detail::safe_f64_to_u32((as<f64>(len) * 8.0) / (info.duration_sec * 1000.0));
         }
     }
 

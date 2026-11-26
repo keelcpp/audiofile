@@ -148,7 +148,7 @@ struct ParsedComm {
     out.bits_per_sample = audio_detail::read_u16_be(c + 6);
     out.sample_rate = read_extended80_be(c + 8);
 
-    if (out.channels == 0u || !(out.sample_rate > 0.0)) [[unlikely]] {
+    if (out.channels == 0u || !keel::is_finite(out.sample_rate) || !(out.sample_rate > 0.0)) [[unlikely]] {
         return ErrorCode::InvalidData;
     }
 
@@ -274,7 +274,7 @@ Result<AudioInfo> peek_aiff(ArrayRef<u8> bytes, Allocator* alloc) {
     info.total_frames = comm.num_frames;
     info.duration_sec = as<f64>(comm.num_frames) / comm.sample_rate;
     if (info.duration_sec > 0.0 && len > 0) {
-        info.bit_rate_kbps = as<u32>((as<f64>(len) * 8.0) / (info.duration_sec * 1000.0));
+        info.bit_rate_kbps = audio_detail::safe_f64_to_u32((as<f64>(len) * 8.0) / (info.duration_sec * 1000.0));
     }
 
     aiff_detail::parse_aiff_metadata(d, len, chunks, info.metadata, dst_alloc);

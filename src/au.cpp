@@ -110,7 +110,7 @@ Result<AudioInfo> peek_au(ArrayRef<u8> bytes, Allocator* alloc) {
         info.total_frames = actual_data_bytes / block_align;
         info.duration_sec = as<f64>(info.total_frames) / info.sample_rate;
         if (info.duration_sec > 0.0 && len > 0) {
-            info.bit_rate_kbps = as<u32>((as<f64>(len) * 8.0) / (info.duration_sec * 1000.0));
+            info.bit_rate_kbps = audio_detail::safe_f64_to_u32((as<f64>(len) * 8.0) / (info.duration_sec * 1000.0));
         }
     }
 

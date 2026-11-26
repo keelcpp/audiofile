@@ -162,22 +162,36 @@ template <typename ByteBuf> inline void write_f64_be(ByteBuf& buf, f64 d) {
     write_u64_be(buf, u);
 }
 
+// Safe bounded float-to-integer conversions (never trigger UB on Inf/NaN/out-of-range)
+[[nodiscard]] inline u32 safe_f64_to_u32(f64 v) noexcept {
+    if (!keel::is_finite(v) || !(v > 0.0)) return 0u;
+    if (v >= 4294967295.0) return 0xFFFFFFFFu;
+    return as<u32>(v);
+}
+
+[[nodiscard]] inline u64 safe_f64_to_u64(f64 v) noexcept {
+    if (!keel::is_finite(v) || !(v > 0.0)) return 0ULL;
+    if (v >= 18446744073709550592.0) return Limits<u64>::kMax;
+    return as<u64>(v);
+}
+
 // ITU-T G.711 Mu-law and A-law decoders
 [[nodiscard]] inline i16 decode_mu_law(u8 mu) noexcept {
     mu = as<u8>(~mu);
-    const int sign = ((mu & 0x80u) != 0u) ? -1 : 1;
-    const int exponent = as<int>((mu >> 4) & 0x07u);
-    const int mantissa = as<int>(mu & 0x0Fu);
-    const int sample = ((mantissa << 3) + 0x84) << exponent;
+    const i32 sign = ((mu & 0x80u) != 0u) ? -1 : 1;
+    const i32 exponent = as<i32>((mu >> 4) & 0x07u);
+    const i32 mantissa = as<i32>(mu & 0x0Fu);
+    const i32 sample = ((mantissa << 3) + 0x84) << exponent;
     return as<i16>(sign * (sample - 0x84));
 }
 
 [[nodiscard]] inline i16 decode_a_law(u8 a) noexcept {
     a ^= 0x55u;
-    const int sign = ((a & 0x80u) != 0u) ? -1 : 1;
-    const int exponent = as<int>((a >> 4) & 0x07u);
-    const int mantissa = as<int>(a & 0x0Fu);
-    const int sample = (exponent == 0) ? ((mantissa << 4) + 8) : (((mantissa << 4) + 0x108) << (exponent - 1));
+    // Per ITU-T G.711 A-law: after XOR 0x55, bit 7 == 1 indicates positive, 0 indicates negative.
+    const i32 sign = ((a & 0x80u) != 0u) ? 1 : -1;
+    const i32 exponent = as<i32>((a >> 4) & 0x07u);
+    const i32 mantissa = as<i32>(a & 0x0Fu);
+    const i32 sample = (exponent == 0) ? ((mantissa << 4) + 8) : (((mantissa << 4) + 0x108) << (exponent - 1));
     return as<i16>(sign * sample);
 }
 

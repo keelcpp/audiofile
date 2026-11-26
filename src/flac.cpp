@@ -303,7 +303,7 @@ Result<AudioInfo> peek_flac(ArrayRef<u8> bytes, Allocator* alloc) {
     info.total_frames = st.total_frames;
     info.duration_sec = as<f64>(st.total_frames) / info.sample_rate;
     if (info.duration_sec > 0.0 && !bytes.empty()) {
-        info.bit_rate_kbps = as<u32>((as<f64>(bytes.size()) * 8.0) / (info.duration_sec * 1000.0));
+        info.bit_rate_kbps = audio_detail::safe_f64_to_u32((as<f64>(bytes.size()) * 8.0) / (info.duration_sec * 1000.0));
     }
     info.metadata = keel::move(st.metadata);
     return info;
@@ -325,11 +325,11 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
     }
 
     ArenaTemp scratch = get_scratch(dst_alloc);
-    ArenaArray<i32> channel_buffers[8];
+    Array<i32> channel_buffers[8];
     ArenaArray<i64> subframe_buffers[8];
     const usize init_block = (st.max_block_size > 0 && st.max_block_size <= 65536u) ? st.max_block_size : 4096u;
     for (u16 ch = 0; ch < num_channels; ++ch) {
-        channel_buffers[ch] = ArenaArray<i32>(scratch.arena());
+        channel_buffers[ch] = Array<i32>(dst_alloc);
         subframe_buffers[ch] = ArenaArray<i64>(scratch.arena(), init_block);
     }
 
@@ -346,7 +346,7 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
         }
         if (sync != 0x3FFEu) {
             while (!br.eof() && sync != 0x3FFEu) {
-                sync = ((sync << 1) | br.read_bits(1)) & 0x3FFEu;
+                sync = ((sync << 1) | br.read_bits(1)) & 0x3FFFu;
             }
             if (sync != 0x3FFEu) {
                 if (stream_cursor == 0 && total_expected > 0) [[unlikely]] {
@@ -371,6 +371,17 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
         if (reserved1 != 0u || reserved2 != 0u || block_size_code == 0u || sample_rate_code == 15u ||
             sample_size_code == 3u || chan_assign > 10u) [[unlikely]] {
             return ErrorCode::InvalidData;
+        }
+
+        u32 frame_bps = st.bits_per_sample;
+        switch (sample_size_code) {
+            case 1u: frame_bps = 8u; break;
+            case 2u: frame_bps = 12u; break;
+            case 4u: frame_bps = 16u; break;
+            case 5u: frame_bps = 20u; break;
+            case 6u: frame_bps = 24u; break;
+            case 7u: frame_bps = 32u; break;
+            default: break;
         }
 
         const u32 frame_channels = (chan_assign <= 7u) ? (chan_assign + 1u) : 2u;
@@ -430,7 +441,7 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
                 }
             }
 
-            u32 subframe_bps = st.bits_per_sample;
+            u32 subframe_bps = frame_bps;
             if ((chan_assign == 8u && ch == 1) || (chan_assign == 9u && ch == 0) || (chan_assign == 10u && ch == 1)) {
                 ++subframe_bps;
             }
@@ -470,17 +481,19 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
                     return res_ec;
                 }
                 for (u32 i = order; i < block_size; ++i) {
-                    i64 pred = 0;
+                    u64 pred = 0;
                     if (order == 1u) {
-                        pred = samples[i - 1];
+                        pred = as<u64>(samples[i - 1]);
                     } else if (order == 2u) {
-                        pred = 2 * samples[i - 1] - samples[i - 2];
+                        pred = 2ULL * as<u64>(samples[i - 1]) - as<u64>(samples[i - 2]);
                     } else if (order == 3u) {
-                        pred = 3 * samples[i - 1] - 3 * samples[i - 2] + samples[i - 3];
+                        pred = 3ULL * as<u64>(samples[i - 1]) - 3ULL * as<u64>(samples[i - 2]) +
+                               as<u64>(samples[i - 3]);
                     } else if (order == 4u) {
-                        pred = 4 * samples[i - 1] - 6 * samples[i - 2] + 4 * samples[i - 3] - samples[i - 4];
+                        pred = 4ULL * as<u64>(samples[i - 1]) - 6ULL * as<u64>(samples[i - 2]) +
+                               4ULL * as<u64>(samples[i - 3]) - as<u64>(samples[i - 4]);
                     }
-                    samples[i] += pred;
+                    samples[i] = as<i64>(as<u64>(samples[i]) + pred);
                 }
             } else if (subframe_type >= 0x20u) {
                 const u32 order = (subframe_type & 0x1Fu) + 1u;
@@ -496,6 +509,9 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
                 }
                 const u32 qlp_precision = qlp_prec_raw + 1u;
                 const i32 qlp_shift = as<i32>(br.read_signed_bits(5));
+                if (qlp_shift < 0) [[unlikely]] {
+                    return ErrorCode::InvalidData;
+                }
                 i64 qlp_coeffs[32]{};
                 for (u32 i = 0; i < order; ++i) {
                     qlp_coeffs[i] = br.read_signed_bits(qlp_precision);
@@ -508,16 +524,12 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
                     return res_ec;
                 }
                 for (u32 i = order; i < block_size; ++i) {
-                    i64 sum = 0;
+                    u64 sum_u = 0;
                     for (u32 j = 0; j < order; ++j) {
-                        sum += qlp_coeffs[j] * samples[i - 1u - j];
+                        sum_u += as<u64>(qlp_coeffs[j]) * as<u64>(samples[i - 1u - j]);
                     }
-                    if (qlp_shift >= 0) {
-                        sum >>= qlp_shift;
-                    } else {
-                        sum = as<i64>(as<u64>(sum) << (-qlp_shift));
-                    }
-                    samples[i] += sum;
+                    const i64 shifted = as<i64>(sum_u) >> qlp_shift;
+                    samples[i] = as<i64>(as<u64>(samples[i]) + as<u64>(shifted));
                 }
             } else {
                 return ErrorCode::InvalidData;
@@ -541,19 +553,18 @@ Result<AudioBuffer> decode_flac(ArrayRef<u8> bytes, const AudioDecodeOptions& op
             i64* r = subframe_buffers[1].data();
             if (chan_assign == 8u) {
                 for (u32 i = 0; i < block_size; ++i) {
-                    r[i] = l[i] - r[i];
+                    r[i] = as<i64>(as<u64>(l[i]) - as<u64>(r[i]));
                 }
             } else if (chan_assign == 9u) {
                 for (u32 i = 0; i < block_size; ++i) {
-                    l[i] = r[i] + l[i];
+                    l[i] = as<i64>(as<u64>(r[i]) + as<u64>(l[i]));
                 }
             } else if (chan_assign == 10u) {
                 for (u32 i = 0; i < block_size; ++i) {
-                    i64 mid = l[i];
                     const i64 side = r[i];
-                    mid = (mid * 2) | (side & 1);
-                    l[i] = (mid + side) >> 1;
-                    r[i] = (mid - side) >> 1;
+                    const u64 mid_u = (as<u64>(l[i]) << 1) | as<u64>(side & 1LL);
+                    l[i] = as<i64>(mid_u + as<u64>(side)) >> 1;
+                    r[i] = as<i64>(mid_u - as<u64>(side)) >> 1;
                 }
             }
         }
